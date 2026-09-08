@@ -1,0 +1,2 @@
+import Icon from '../components/Icon';
+export default function NotFound({onNavigate}){return <div className="not-found"><div className="auth-logo">R</div><span className="eyebrow">404</span><h2>This page doesn't exist.</h2><p>Use the navigation to return to the restaurant dashboard.</p><button className="primary-button" onClick={()=>onNavigate('/dashboard')} type="button"><Icon name="arrow" size={16}/> Back to overview</button></div>}

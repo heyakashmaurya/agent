@@ -14,8 +14,8 @@ import { generateConfirmationCode } from "../../utils/generateConfirmationCode.j
 
 export const createBooking = async ({
     name,
-    phone,
-    email = "",
+    phone ,
+    email,
 
     bookingDate,
     startTime,
@@ -63,7 +63,7 @@ export const createBooking = async ({
 
         const customer = await findOrCreateCustomer({
 
-            fullName:name,
+            name,
 
             phone,
 
@@ -173,7 +173,7 @@ export const createBooking = async ({
 
         };
 
-    }
+    } 
 
     catch (error) {
 

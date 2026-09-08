@@ -10,7 +10,7 @@ import Customer from "../../models/Customer.js";
 export const findOrCreateCustomer = async ({
     name,
     phone,
-    email = "",
+    email 
 }) => {
 
     try {
@@ -33,6 +33,7 @@ export const findOrCreateCustomer = async ({
 
         let customer = await Customer.findOne({
             phone,
+            fullname:name,
             isDeleted: false,
         });
 

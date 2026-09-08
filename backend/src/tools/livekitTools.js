@@ -48,7 +48,7 @@ const createBookingTool = llm.tool({
 
     parameters: z.object({
         name: z.string(),
-        phone: z.string(),
+        phone: z.string().optional().default(""),
         email: z.string().optional().default(""),
         bookingDate: z.string(),
         startTime: z.string(),

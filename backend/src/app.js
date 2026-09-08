@@ -24,6 +24,12 @@ import outboundRoutes from "./routes/outboundRoutes.js";
 
 import livekitRoutes from "./routes/livekitRoutes.js";
 
+//updated code format new routes imported here now 
+import customerRoutes from "./routes/customer.routes.js";
+import dashboardRoutes from "./routes/dashboard.routes.js";
+
+
+
 
 
 
@@ -117,6 +123,9 @@ app.use(
   livekitRoutes
 );
 
+
+app.use("/api/customers", customerRoutes);
+app.use("/api/dashboard", dashboardRoutes);
 
 /* ---------------------------------- */
 /* 404 Handler                        */

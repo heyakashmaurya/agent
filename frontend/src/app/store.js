@@ -1,58 +1,19 @@
+// const TOKEN_KEY = 'restaurant_ai_access_token';
+const TOKEN_KEY = 'token';
+const USER_KEY = 'restaurant_ai_user';
 
-import { configureStore } from "@reduxjs/toolkit";
+const safeStorage = {
+  get(key) { try { return window.localStorage.getItem(key); } catch { return null; } },
+  set(key, value) { try { if (value == null) window.localStorage.removeItem(key); else window.localStorage.setItem(key, value); } catch { /* best effort */ } },
+  remove(key) { try { window.localStorage.removeItem(key); } catch { /* best effort */ } },
+};
 
-import authReducer from "../features/authSlice";
-import bookingReducer from "../features/bookingSlice";
-import socketReducer from "../features/socketSlice";
-import tableReducer from "../features/tableSlice";
-import analyticsReducer
-    from "../features/analyticsSlice.js";
-    import callReducer
-    from "../features/callSlice.js";
-
-
-const store = configureStore({
-    reducer: {
-        auth: authReducer,
-        booking: bookingReducer,
-        socket: socketReducer,
-        table: tableReducer,
-        analytics: analyticsReducer,
-        call: callReducer,
-    },
-});
-
-
-export default store;
-
-// import { configureStore } from "@reduxjs/toolkit";
-
-// import authReducer from "../features/authSlice.js";
-// import bookingReducer from "../features/bookingSlice.js";
-// import tableReducer from "../features/tableSlice.js";
-// import socketReducer from "../features/socketSlice.js";
-
-
-// const store = configureStore({
-//     reducer: {
-//         auth: authReducer,
-
-//         booking: bookingReducer,
-
-//         table: tableReducer,
-
-//         socket: socketReducer,
-//     },
-
-//     middleware: (getDefaultMiddleware) =>
-//         getDefaultMiddleware({
-//             serializableCheck: true,
-//         }),
-
-//     devTools:
-//         import.meta.env.MODE !==
-//         "production",
-// });
-
-
-// export default store;
+export const authStore = {
+  getToken: () => safeStorage.get(TOKEN_KEY),
+  setToken: (token) => safeStorage.set(TOKEN_KEY, token || null),
+  getUser() {
+    try { const raw = safeStorage.get(USER_KEY); return raw ? JSON.parse(raw) : null; } catch { return null; }
+  },
+  setUser(user) { safeStorage.set(USER_KEY, user ? JSON.stringify(user) : null); },
+  clear() { safeStorage.remove(TOKEN_KEY); safeStorage.remove(USER_KEY); },
+};

@@ -1,138 +1,195 @@
 
 import { findBooking } from "./findBooking.js";
 
-/*
-|--------------------------------------------------------------------------
-| Cancel Booking Service
-|--------------------------------------------------------------------------
-*/
+const CANCEL_ACTORS = new Set(["customer", "restaurant", "admin", "ai"]);
 
 export const cancelBooking = async ({
-    bookingId,
-    confirmationCode,
-    phone,
-    reason = "Cancelled by customer",
-    cancelledBy = null,
+  bookingId,
+  confirmationCode,
+  phone,
+  reason = "Cancelled by customer",
+  cancelledBy = null,
+  cancelledByUser = null,
 }) => {
-    try {
-        /*
-        |--------------------------------------------------------------------------
-        | Find Booking
-        |--------------------------------------------------------------------------
-        */
+  const booking = await findBooking({ bookingId, confirmationCode, phone });
 
-        const booking = await findBooking({
-            bookingId,
-            confirmationCode,
-            phone,
-        });
+  if (!booking) {
+    return { success: false, booking: null, message: "Booking not found." };
+  }
+  if (booking.status === "cancelled") {
+    return { success: false, booking, message: "Booking is already cancelled." };
+  }
+  if (booking.status === "completed") {
+    return { success: false, booking, message: "Completed booking cannot be cancelled." };
+  }
+  if (booking.status === "no_show") {
+    return { success: false, booking, message: "No-show booking cannot be cancelled." };
+  }
 
-        if (!booking) {
-            return {
-                success: false,
-                booking: null,
-                message: "Booking not found.",
-            };
-        }
+  if (cancelledBy !== null && !CANCEL_ACTORS.has(cancelledBy)) {
+    throw new TypeError("cancelledBy must be one of: customer, restaurant, admin, ai.");
+  }
 
-        /*
-        |--------------------------------------------------------------------------
-        | Already Cancelled
-        |--------------------------------------------------------------------------
-        */
+  if (cancelledByUser && !String(cancelledByUser).match(/^[0-9a-fA-F]{24}$/)) {
+    throw new TypeError("cancelledByUser must be a valid MongoDB ObjectId.");
+  }
 
-        if (booking.status === "cancelled") {
-            return {
-                success: false,
-                booking,
-                message: "Booking is already cancelled.",
-            };
-        }
+  booking.status = "cancelled";
+  booking.cancelReason = String(reason || "Cancelled by customer").trim().slice(0, 500);
+  booking.cancelledBy = cancelledBy || null;
+  booking.cancelledByUser = cancelledByUser || null;
+  booking.cancelledAt = new Date();
 
-        /*
-        |--------------------------------------------------------------------------
-        | Prevent Cancelling Completed Booking
-        |--------------------------------------------------------------------------
-        */
+  await booking.save();
 
-        if (booking.status === "completed") {
-            return {
-                success: false,
-                booking,
-                message: "Completed booking cannot be cancelled.",
-            };
-        }
+  await booking.populate([
+    { path: "customer" },
+    { path: "table" },
+    { path: "cancelledByUser", select: "fullName email role" },
+  ]);
 
-        /*
-        |--------------------------------------------------------------------------
-        | Prevent Cancelling No-Show Booking
-        |--------------------------------------------------------------------------
-        */
-
-        if (booking.status === "no_show") {
-            return {
-                success: false,
-                booking,
-                message: "No-show booking cannot be cancelled.",
-            };
-        }
-
-        /*
-        |--------------------------------------------------------------------------
-        | Update Cancellation Information
-        |--------------------------------------------------------------------------
-        */
-
-        booking.status = "cancelled";
-
-        booking.cancelReason = reason;
-
-        booking.cancelledBy = cancelledBy;
-
-        booking.cancelledAt = new Date();
-
-        /*
-        |--------------------------------------------------------------------------
-        | Save Booking
-        |--------------------------------------------------------------------------
-        */
-
-        await booking.save();
-
-        /*
-        |--------------------------------------------------------------------------
-        | Populate Relations
-        |--------------------------------------------------------------------------
-        */
-
-        await booking.populate([
-            {
-                path: "customer",
-            },
-            {
-                path: "table",
-            },
-        ]);
-
-        /*
-        |--------------------------------------------------------------------------
-        | Success
-        |--------------------------------------------------------------------------
-        */
-
-        return {
-            success: true,
-            booking,
-            message: "Booking cancelled successfully.",
-        };
-
-    } catch (error) {
-        console.error(
-            "Cancel Booking Error:",
-            error
-        );
-
-        throw error;
-    }
+  return {
+    success: true,
+    booking,
+    message: "Booking cancelled successfully.",
+  };
 };
+
+
+// import { findBooking } from "./findBooking.js";
+
+// /*
+// |--------------------------------------------------------------------------
+// | Cancel Booking Service
+// |--------------------------------------------------------------------------
+// */
+
+// export const cancelBooking = async ({
+//     bookingId,
+//     confirmationCode,
+//     phone,
+//     reason = "Cancelled by customer",
+//     cancelledBy = null,
+// }) => {
+//     try {
+//         /*
+//         |--------------------------------------------------------------------------
+//         | Find Booking
+//         |--------------------------------------------------------------------------
+//         */
+
+//         const booking = await findBooking({
+//             bookingId,
+//             confirmationCode,
+//             phone,
+//         });
+
+//         if (!booking) {
+//             return {
+//                 success: false,
+//                 booking: null,
+//                 message: "Booking not found.",
+//             };
+//         }
+
+//         /*
+//         |--------------------------------------------------------------------------
+//         | Already Cancelled
+//         |--------------------------------------------------------------------------
+//         */
+
+//         if (booking.status === "cancelled") {
+//             return {
+//                 success: false,
+//                 booking,
+//                 message: "Booking is already cancelled.",
+//             };
+//         }
+
+//         /*
+//         |--------------------------------------------------------------------------
+//         | Prevent Cancelling Completed Booking
+//         |--------------------------------------------------------------------------
+//         */
+
+//         if (booking.status === "completed") {
+//             return {
+//                 success: false,
+//                 booking,
+//                 message: "Completed booking cannot be cancelled.",
+//             };
+//         }
+
+//         /*
+//         |--------------------------------------------------------------------------
+//         | Prevent Cancelling No-Show Booking
+//         |--------------------------------------------------------------------------
+//         */
+
+//         if (booking.status === "no_show") {
+//             return {
+//                 success: false,
+//                 booking,
+//                 message: "No-show booking cannot be cancelled.",
+//             };
+//         }
+
+//         /*
+//         |--------------------------------------------------------------------------
+//         | Update Cancellation Information
+//         |--------------------------------------------------------------------------
+//         */
+
+//         booking.status = "cancelled";
+
+//         booking.cancelReason = reason;
+
+//         booking.cancelledBy = cancelledBy;
+
+//         booking.cancelledAt = new Date();
+
+//         /*
+//         |--------------------------------------------------------------------------
+//         | Save Booking
+//         |--------------------------------------------------------------------------
+//         */
+
+//         await booking.save();
+
+//         /*
+//         |--------------------------------------------------------------------------
+//         | Populate Relations
+//         |--------------------------------------------------------------------------
+//         */
+
+//         await booking.populate([
+//             {
+//                 path: "customer",
+//             },
+//             {
+//                 path: "table",
+//             },
+//         ]);
+
+//         /*
+//         |--------------------------------------------------------------------------
+//         | Success
+//         |--------------------------------------------------------------------------
+//         */
+
+//         return {
+//             success: true,
+//             booking,
+//             message: "Booking cancelled successfully.",
+//         };
+
+//     } catch (error) {
+//         console.error(
+//             "Cancel Booking Error:",
+//             error
+//         );
+
+//         throw error;
+//     }
+// };
 

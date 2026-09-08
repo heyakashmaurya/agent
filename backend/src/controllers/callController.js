@@ -1,1565 +1,298 @@
-
-
 import twilio from "twilio";
-
-import {
-    processConversation,
-} from "../services/voice/deepseekService.js";
-
-import {
-    listCallLogs,
-    getCallById,
-    getCallBySid,
-    createCallLog,
-    updateCallLog,
-    completeCall,
-} from "../services/call/call.service.js";
-
 import mongoose from "mongoose";
+import env from "../config/env.js";
+import { processConversation } from "../services/voice/deepseekService.js";
+import { createBooking } from "../services/booking/createBooking.js";
+import {
+  listCallLogs,
+  getCallById,
+  getCallBySid,
+  createCallLog,
+  updateCallLog,
+  completeCall,
+} from "../services/call/call.service.js";
+import {
+  isObjectId,
+  parseBoolean,
+  parsePositiveInt,
+  parseString,
+  sendError,
+  sendSuccess,
+  logControllerError,
+} from "./_controllerUtils.js";
 
+const VoiceResponse = twilio.twiml.VoiceResponse;
+const sessions = new Map();
 
-const VoiceResponse =
-    twilio.twiml.VoiceResponse;
+const CALL_STATUSES = ["Ringing", "Answered", "Completed", "Missed", "Busy", "Failed", "Cancelled"];
+const DIRECTIONS = ["Incoming", "Outgoing"];
+const AI_OUTCOMES = ["Booking Created", "Booking Updated", "Booking Cancelled", "Availability Checked", "Information Requested", "Transferred to Human", "No Action"];
+const SENTIMENTS = ["Positive", "Neutral", "Negative"];
 
-
-/*
-|--------------------------------------------------------------------------
-| In-memory voice sessions
-|--------------------------------------------------------------------------
-|
-| This is kept for your current Twilio conversation flow.
-|
-| IMPORTANT:
-| For multi-instance production deployment, move this state to Redis.
-|
-|--------------------------------------------------------------------------
-*/
-
-const sessions =
-    new Map();
-
-
-/*
-|--------------------------------------------------------------------------
-| Helpers
-|--------------------------------------------------------------------------
-*/
-
-const stringValue = (
-    value,
-    defaultValue = ""
-) => {
-
-    if (
-        value === undefined ||
-        value === null
-    ) {
-        return defaultValue;
-    }
-
-    return String(
-        value
-    ).trim();
+const publicBaseUrl = () => {
+  const value = parseString(env.baseUrl || process.env.PUBLIC_BASE_URL);
+  if (!value) throw new Error("PUBLIC_BASE_URL/baseUrl is required for Twilio voice callbacks.");
+  return value.replace(/\/$/, "");
 };
 
+const voiceActionUrl = () => `${publicBaseUrl()}/api/call/process`;
 
-const positiveInteger = (
-    value,
-    defaultValue = null
-) => {
-
-    const parsed =
-        Number(value);
-
-    if (
-        !Number.isInteger(parsed) ||
-        parsed < 1
-    ) {
-        return defaultValue;
-    }
-
-    return parsed;
-};
-
-
-const isValidObjectId = (
-    value
-) => {
-
-    return mongoose.Types.ObjectId.isValid(
-        value
-    );
-};
-
-
-const getSession = (
-    caller
-) => {
-
-    if (
-        !sessions.has(
-            caller
-        )
-    ) {
-
-        sessions.set(
-            caller,
-            {
-                intent: null,
-
-                guests: null,
-
-                date: null,
-
-                time: null,
-
-                name: null,
-
-                phone: caller,
-
-                confirmed: false,
-
-                awaitingConfirmation: false,
-
-                callLogId: null,
-            }
-        );
-    }
-
-    return sessions.get(
-        caller
-    );
-};
-
-
-const updateSession = (
-    session,
-    data
-) => {
-
-    for (
-        const key in data
-    ) {
-
-        if (
-            data[key] !== null &&
-            data[key] !== undefined
-        ) {
-
-            session[key] =
-                data[key];
-        }
-    }
-};
-
-
-const clearSession = (
-    caller
-) => {
-
-    sessions.delete(
-        caller
-    );
-};
-
-
-/*
-|--------------------------------------------------------------------------
-| Create Initial Call Log
-|--------------------------------------------------------------------------
-|
-| Creates a CallLog when a Twilio call enters the application.
-|
-|--------------------------------------------------------------------------
-*/
-
-const ensureCallLog = async ({
-    callSid,
-    phoneNumber,
-    direction = "Incoming",
-    callStatus = "Ringing",
-    roomName = "",
-}) => {
-
-    if (
-        !phoneNumber
-    ) {
-        return null;
-    }
-
-
-    /*
-    |--------------------------------------------------------------------------
-    | Existing Call
-    |--------------------------------------------------------------------------
-    */
-
-    if (
-        callSid
-    ) {
-
-        const existing =
-            await getCallBySid(
-                callSid
-            );
-
-        if (
-            existing
-        ) {
-            return existing;
-        }
-    }
-
-
-    /*
-    |--------------------------------------------------------------------------
-    | Create New Call Log
-    |--------------------------------------------------------------------------
-    */
-
-    return await createCallLog({
-        callSid:
-            stringValue(
-                callSid
-            ),
-
-        phoneNumber:
-            stringValue(
-                phoneNumber
-            ),
-
-        direction,
-
-        callStatus,
-
-        roomName:
-            stringValue(
-                roomName
-            ),
-
-        aiHandled:
-            true,
+const getSession = (caller, callSid = "") => {
+  const key = callSid || caller || "unknown";
+  if (!sessions.has(key)) {
+    sessions.set(key, {
+      callSid,
+      caller,
+      intent: null,
+      guests: null,
+      date: null,
+      time: null,
+      name: null,
+      phone: caller || "",
+      confirmed: false,
+      awaitingConfirmation: false,
+      callLogId: null,
+      createdAt: Date.now(),
     });
+  }
+  return sessions.get(key);
 };
 
+const clearSession = (key) => sessions.delete(key);
 
-/*
-|--------------------------------------------------------------------------
-| Twilio Incoming Call
-|--------------------------------------------------------------------------
-*/
+const updateSession = (session, result) => {
+  for (const [key, value] of Object.entries(result || {})) {
+    if (value !== undefined && value !== null && value !== "") session[key] = value;
+  }
+};
 
-export const incomingCall = async (
-    req,
-    res,
-    next
-) => {
+const ensureCallLog = async ({ callSid, phoneNumber, direction = "Incoming", callStatus = "Ringing" }) => {
+  if (!phoneNumber) return null;
+  if (callSid) {
+    const existing = await getCallBySid(callSid);
+    if (existing) return existing;
+  }
+  return createCallLog({ callSid, phoneNumber, direction, callStatus, aiHandled: true });
+};
 
-    const twiml =
-        new VoiceResponse();
+const sayAndGather = (twiml, message) => {
+  twiml.say({ voice: "Polly.Joanna", language: "en-US" }, String(message));
+  twiml.gather({ input: ["speech"], action: voiceActionUrl(), method: "POST", speechTimeout: "auto", timeout: 8 });
+};
 
+const finishCall = async ({ twiml, sessionKey, callLog, message, aiOutcome = "No Action" }) => {
+  if (callLog) {
+    await completeCall(callLog._id, { aiOutcome, endedAt: new Date() });
+  }
+  twiml.say({ voice: "Polly.Joanna", language: "en-US" }, message);
+  twiml.hangup();
+  clearSession(sessionKey);
+  return twiml;
+};
 
-    try {
+export const incomingCall = async (req, res, next) => {
+  const twiml = new VoiceResponse();
+  try {
+    const callSid = parseString(req.body?.CallSid || req.query?.CallSid);
+    const caller = parseString(req.body?.From || req.query?.From);
+    const callLog = await ensureCallLog({ callSid, phoneNumber: caller, direction: "Incoming", callStatus: "Ringing" });
+    const session = getSession(caller, callSid);
+    session.callLogId = callLog?._id?.toString() || null;
 
-        const callSid =
-            stringValue(
-                req.body?.CallSid ||
-                req.query?.CallSid
-            );
+    sayAndGather(twiml, "Hello, thanks for calling. How can I help you today?");
+    return res.type("text/xml").send(twiml.toString());
+  } catch (error) {
+    logControllerError("CALL_INCOMING", error, req);
+    return next(error);
+  }
+};
 
+export const processCall = async (req, res, next) => {
+  const twiml = new VoiceResponse();
+  const callSid = parseString(req.body?.CallSid);
+  const caller = parseString(req.body?.From, "unknown");
+  const speechText = parseString(req.body?.SpeechResult);
+  const sessionKey = callSid || caller;
 
-        const caller =
-            stringValue(
-                req.body?.From ||
-                req.query?.From
-            );
+  try {
+    const session = getSession(caller, callSid);
+    let callLog = session.callLogId && isObjectId(session.callLogId) ? await getCallById(session.callLogId).catch(() => null) : null;
+    if (!callLog) {
+      callLog = await ensureCallLog({ callSid, phoneNumber: caller, direction: "Incoming", callStatus: "Answered" });
+      session.callLogId = callLog?._id?.toString() || null;
+    } else if (callLog.callStatus === "Ringing") {
+      callLog = await updateCallLog(callLog._id, { callStatus: "Answered" });
+    }
 
+    if (!speechText) {
+      sayAndGather(twiml, "Sorry, I didn't hear that. Please tell me how I can help.");
+      return res.type("text/xml").send(twiml.toString());
+    }
 
-        /*
-        |--------------------------------------------------------------------------
-        | Create Call Log
-        |--------------------------------------------------------------------------
-        */
+    if (callLog) {
+      const transcript = callLog.transcript ? `${callLog.transcript}\nUser: ${speechText}` : `User: ${speechText}`;
+      callLog = await updateCallLog(callLog._id, { transcript });
+    }
 
-        const callLog =
-            await ensureCallLog({
-                callSid,
+    if (session.awaitingConfirmation) {
+      const answer = speechText.toLowerCase();
+      if (/\b(yes|yeah|yep|correct|confirm|that's right|that is right)\b/i.test(answer)) {
+        session.confirmed = true;
+        session.awaitingConfirmation = false;
+      } else if (/\b(no|nope|wrong|incorrect|change)\b/i.test(answer)) {
+        session.awaitingConfirmation = false;
+        sayAndGather(twiml, "No problem. What would you like to change?");
+        return res.type("text/xml").send(twiml.toString());
+      } else {
+        sayAndGather(twiml, "Please say yes to confirm, or no if you would like to change something.");
+        return res.type("text/xml").send(twiml.toString());
+      }
+    }
 
-                phoneNumber:
-                    caller,
+    if (!session.confirmed) {
+      const result = await processConversation(speechText, session);
+      updateSession(session, result);
+      const intent = String(session.intent || result?.intent || "").toLowerCase();
+      const bookingReady = ["booking", "booking_ready"].includes(intent);
 
-                direction:
-                    "Incoming",
-
-                callStatus:
-                    "Ringing",
-            });
-
-
-        /*
-        |--------------------------------------------------------------------------
-        | Initialize Session
-        |--------------------------------------------------------------------------
-        */
-
-        const session =
-            getSession(
-                caller
-            );
-
-
-        if (
-            callLog
-        ) {
-
-            session.callLogId =
-                callLog._id.toString();
+      if (bookingReady && session.guests && session.date && session.time && session.name) {
+        session.awaitingConfirmation = true;
+        sayAndGather(twiml, `Just to confirm, a table for ${session.guests} people on ${session.date} at ${session.time} under the name ${session.name}. Is that correct?`);
+      } else {
+        const message = result?.reply || "How can I help you with your reservation?";
+        if (callLog) {
+          callLog = await updateCallLog(callLog._id, {
+            transcript: `${callLog.transcript || ""}\nAI: ${message}`.trim(),
+            aiOutcome: getAiOutcome(session.intent),
+          });
         }
+        sayAndGather(twiml, message);
+      }
+      return res.type("text/xml").send(twiml.toString());
+    }
 
+    const intent = String(session.intent || "").toLowerCase();
+    if (["booking", "booking_ready"].includes(intent)) {
+      if (!session.guests || !session.date || !session.time || !session.name) {
+        session.confirmed = false;
+        session.awaitingConfirmation = false;
+        sayAndGather(twiml, "I still need the reservation details. Please tell me the number of guests, date, time, and name.");
+        return res.type("text/xml").send(twiml.toString());
+      }
 
-        /*
-        |--------------------------------------------------------------------------
-        | Greeting
-        |--------------------------------------------------------------------------
-        */
+      const bookingResult = await createBooking({
+        name: session.name,
+        phone: session.phone || caller,
+        email: session.email || "",
+        bookingDate: session.date,
+        startTime: session.time,
+        guestCount: Number(session.guests),
+        specialRequest: session.specialRequest || "",
+        occasion: session.occasion || "",
+        notes: "Created by AI voice receptionist",
+        bookingSource: "ai_voice",
+      });
 
-        twiml.say(
-            {
-                voice:
-                    "Polly.Joanna",
+      if (!bookingResult?.success) {
+        session.confirmed = false;
+        session.awaitingConfirmation = false;
+        const message = bookingResult?.message || "I'm sorry, I couldn't complete that reservation because the requested table is no longer available.";
+        if (callLog) await updateCallLog(callLog._id, { aiOutcome: "No Action", notes: message });
+        sayAndGather(twiml, message);
+        return res.type("text/xml").send(twiml.toString());
+      }
 
-                language:
-                    "en-US",
-            },
-
-            "Hello, thanks for calling. How can I help you today?"
-        );
-
-
-        /*
-        |--------------------------------------------------------------------------
-        | Gather Speech
-        |--------------------------------------------------------------------------
-        */
-
-        twiml.gather({
-
-            input: [
-                "speech",
-            ],
-
-            action:
-                "https://duvet-twirl-expansive.ngrok-free.dev/api/call/process",
-
-            method:
-                "POST",
-
-            speechTimeout:
-                "auto",
+      if (callLog) {
+        callLog = await updateCallLog(callLog._id, {
+          booking: bookingResult.booking?._id || null,
+          aiOutcome: "Booking Created",
+          notes: "Reservation created and confirmed by caller.",
+          transcript: `${callLog.transcript || ""}\nAI: Booking confirmed.`.trim(),
         });
-
-
-        return res
-            .type("text/xml")
-            .send(
-                twiml.toString()
-            );
-
-    } catch (error) {
-
-        console.error(
-            "Incoming Call Error:",
-            error
-        );
-
-        return next(
-            error
-        );
+      }
+      const confirmationCode = bookingResult.booking?.confirmationCode ? ` Your confirmation code is ${bookingResult.booking.confirmationCode}.` : "";
+      const message = `Perfect. Your table for ${session.guests} people on ${session.date} at ${session.time} is confirmed.${confirmationCode} We look forward to serving you.`;
+      await finishCall({ twiml, sessionKey, callLog, message, aiOutcome: "Booking Created" });
+      return res.type("text/xml").send(twiml.toString());
     }
-};
 
-
-/*
-|--------------------------------------------------------------------------
-| Process Call
-|--------------------------------------------------------------------------
-*/
-
-export const processCall = async (
-    req,
-    res,
-    next
-) => {
-
-    const twiml =
-        new VoiceResponse();
-
-
+    const message = "Thanks for calling. A member of our team can help with that request.";
+    if (callLog) await updateCallLog(callLog._id, { aiOutcome: "Transferred to Human", transferredToHuman: true, transcript: `${callLog.transcript || ""}\nAI: ${message}`.trim() });
+    await finishCall({ twiml, sessionKey, callLog, message, aiOutcome: "Transferred to Human" });
+    return res.type("text/xml").send(twiml.toString());
+  } catch (error) {
+    logControllerError("CALL_PROCESS", error, req);
     try {
-
-        const speechText =
-            stringValue(
-                req.body?.SpeechResult
-            );
-
-
-        const caller =
-            stringValue(
-                req.body?.From ||
-                "unknown"
-            );
-
-
-        const callSid =
-            stringValue(
-                req.body?.CallSid
-            );
-
-
-        const session =
-            getSession(
-                caller
-            );
-
-
-        /*
-        |--------------------------------------------------------------------------
-        | Ensure CallLog Exists
-        |--------------------------------------------------------------------------
-        */
-
-        let callLog =
-            null;
-
-
-        if (
-            session.callLogId &&
-            isValidObjectId(
-                session.callLogId
-            )
-        ) {
-
-            try {
-
-                callLog =
-                    await getCallById(
-                        session.callLogId
-                    );
-
-            } catch {
-                callLog =
-                    null;
-            }
-        }
-
-
-        if (
-            !callLog
-        ) {
-
-            callLog =
-                await ensureCallLog({
-                    callSid,
-
-                    phoneNumber:
-                        caller,
-
-                    direction:
-                        "Incoming",
-
-                    callStatus:
-                        "Answered",
-                });
-
-
-            if (
-                callLog
-            ) {
-
-                session.callLogId =
-                    callLog._id.toString();
-            }
-        }
-
-
-        /*
-        |--------------------------------------------------------------------------
-        | Mark Answered
-        |--------------------------------------------------------------------------
-        */
-
-        if (
-            callLog &&
-            callLog.callStatus ===
-                "Ringing"
-        ) {
-
-            callLog =
-                await updateCallLog(
-                    callLog._id,
-                    {
-                        callStatus:
-                            "Answered",
-                    }
-                );
-        }
-
-
-        console.log(
-            "User:",
-            speechText
-        );
-
-
-        /*
-        |--------------------------------------------------------------------------
-        | Empty Speech
-        |--------------------------------------------------------------------------
-        */
-
-        if (
-            !speechText
-        ) {
-
-            twiml.say(
-                {
-                    voice:
-                        "Polly.Joanna",
-
-                    language:
-                        "en-US",
-                },
-
-                "Sorry, I didn't hear that. Please tell me how I can help."
-            );
-
-
-            twiml.gather({
-
-                input: [
-                    "speech",
-                ],
-
-                action:
-                    "https://duvet-twirl-expansive.ngrok-free.dev/api/call/process",
-
-                method:
-                    "POST",
-
-                speechTimeout:
-                    "auto",
-            });
-
-
-            return res
-                .type("text/xml")
-                .send(
-                    twiml.toString()
-                );
-        }
-
-
-        /*
-        |--------------------------------------------------------------------------
-        | Store Transcript
-        |--------------------------------------------------------------------------
-        */
-
-        if (
-            callLog
-        ) {
-
-            const existingTranscript =
-                callLog.transcript ||
-                "";
-
-
-            const newTranscript =
-                existingTranscript
-                    ? `${existingTranscript}\nUser: ${speechText}`
-                    : `User: ${speechText}`;
-
-
-            callLog =
-                await updateCallLog(
-                    callLog._id,
-                    {
-                        transcript:
-                            newTranscript,
-                    }
-                );
-        }
-
-
-        /*
-        |--------------------------------------------------------------------------
-        | Confirmation Step
-        |--------------------------------------------------------------------------
-        */
-
-        if (
-            session.awaitingConfirmation
-        ) {
-
-            const reply =
-                speechText
-                    .toLowerCase()
-                    .trim();
-
-
-            if (
-                reply.includes(
-                    "yes"
-                ) ||
-                reply.includes(
-                    "correct"
-                )
-            ) {
-
-                session.confirmed =
-                    true;
-
-                session.awaitingConfirmation =
-                    false;
-
-            } else if (
-                reply.includes(
-                    "no"
-                )
-            ) {
-
-                session.awaitingConfirmation =
-                    false;
-
-
-                twiml.say(
-                    "No problem. What would you like to change?"
-                );
-
-
-                twiml.gather({
-
-                    input: [
-                        "speech",
-                    ],
-
-                    action:
-                        "https://duvet-twirl-expansive.ngrok-free.dev/api/call/process",
-
-                    method:
-                        "POST",
-
-                    speechTimeout:
-                        "auto",
-                });
-
-
-                return res
-                    .type("text/xml")
-                    .send(
-                        twiml.toString()
-                    );
-
-            } else {
-
-                twiml.say(
-                    "Please say yes or no."
-                );
-
-
-                twiml.gather({
-
-                    input: [
-                        "speech",
-                    ],
-
-                    action:
-                        "https://duvet-twirl-expansive.ngrok-free.dev/api/call/process",
-
-                    method:
-                        "POST",
-
-                    speechTimeout:
-                        "auto",
-                });
-
-
-                return res
-                    .type("text/xml")
-                    .send(
-                        twiml.toString()
-                    );
-            }
-        }
-
-
-        /*
-        |--------------------------------------------------------------------------
-        | AI Processing
-        |--------------------------------------------------------------------------
-        */
-
-        const result =
-            await processConversation(
-                speechText,
-                session
-            );
-
-
-        updateSession(
-            session,
-            result
-        );
-
-
-        let message =
-            result?.reply ||
-            "How can I help you with your reservation?";
-
-
-        /*
-        |--------------------------------------------------------------------------
-        | Ask Confirmation
-        |--------------------------------------------------------------------------
-        */
-
-        const bookingReady =
-            [
-                "booking",
-                "booking_ready",
-                "inquiry",
-                "cancel",
-            ].includes(
-                session.intent
-            );
-
-
-        if (
-            bookingReady &&
-            session.guests &&
-            session.date &&
-            session.time &&
-            session.name &&
-            !session.confirmed
-        ) {
-
-            session.awaitingConfirmation =
-                true;
-
-
-            message =
-                `Just to confirm, a table for ${session.guests} people on ${session.date} at ${session.time}. Does that sound right?`;
-        }
-
-
-        /*
-        |--------------------------------------------------------------------------
-        | Final Booking
-        |--------------------------------------------------------------------------
-        |
-        | IMPORTANT:
-        | Your current Reservation.create() flow has been removed.
-        |
-        | The booking should now be created by your existing
-        | booking service/tool and then linked to CallLog.
-        |
-        |--------------------------------------------------------------------------
-        */
-
-        if (
-            bookingReady &&
-            session.guests &&
-            session.date &&
-            session.time &&
-            session.confirmed
-        ) {
-
-            /*
-            |----------------------------------------------------------------------
-            | Do NOT create a legacy Reservation here.
-            |----------------------------------------------------------------------
-            |
-            | The next integration step should call your existing:
-            |
-            | services/booking/createBooking.js
-            |
-            | and pass:
-            |
-            | name
-            | phone
-            | bookingDate
-            | startTime
-            | guestCount
-            |
-            | Then attach the returned booking ID to CallLog.
-            |
-            |----------------------------------------------------------------------
-            */
-
-            if (
-                callLog
-            ) {
-
-                callLog =
-                    await updateCallLog(
-                        callLog._id,
-                        {
-                            aiOutcome:
-                                "Booking Created",
-
-                            notes:
-                                "Booking details collected and confirmed by caller.",
-                        }
-                    );
-            }
-
-
-            message =
-                `Perfect! Your table for ${session.guests} people on ${session.date} at ${session.time} is confirmed. We look forward to serving you. Goodbye!`;
-
-
-            /*
-            |--------------------------------------------------------------------------
-            | Complete Call
-            |--------------------------------------------------------------------------
-            */
-
-            if (
-                callLog
-            ) {
-
-                await completeCall(
-                    callLog._id,
-                    {
-                        aiOutcome:
-                            "Booking Created",
-
-                        endedAt:
-                            new Date(),
-                    }
-                );
-            }
-
-
-            twiml.say(
-                {
-                    voice:
-                        "Polly.Joanna",
-
-                    language:
-                        "en-US",
-                },
-
-                message
-            );
-
-
-            twiml.hangup();
-
-
-            clearSession(
-                caller
-            );
-
-
-            return res
-                .type("text/xml")
-                .send(
-                    twiml.toString()
-                );
-        }
-
-
-        /*
-        |--------------------------------------------------------------------------
-        | Store AI Response
-        |--------------------------------------------------------------------------
-        */
-
-        if (
-            callLog
-        ) {
-
-            const existingTranscript =
-                callLog.transcript ||
-                "";
-
-
-            const newTranscript =
-                `${existingTranscript}\nAI: ${message}`;
-
-
-            await updateCallLog(
-                callLog._id,
-                {
-                    transcript:
-                        newTranscript,
-
-                    aiOutcome:
-                        getAiOutcome(
-                            session.intent
-                        ),
-                }
-            );
-        }
-
-
-        /*
-        |--------------------------------------------------------------------------
-        | Respond
-        |--------------------------------------------------------------------------
-        */
-
-        twiml.say(
-            {
-                voice:
-                    "Polly.Joanna",
-
-                language:
-                    "en-US",
-            },
-
-            message
-        );
-
-
-        twiml.gather({
-
-            input: [
-                "speech",
-            ],
-
-            action:
-                "https://duvet-twirl-expansive.ngrok-free.dev/api/call/process",
-
-            method:
-                "POST",
-
-            speechTimeout:
-                "auto",
-        });
-
-
-        return res
-            .type("text/xml")
-            .send(
-                twiml.toString()
-            );
-
-    } catch (error) {
-
-        console.error(
-            "Process Call Error:",
-            error
-        );
-
-
-        /*
-        |--------------------------------------------------------------------------
-        | Try to mark call failed
-        |--------------------------------------------------------------------------
-        */
-
-        try {
-
-            const callSid =
-                stringValue(
-                    req.body?.CallSid
-                );
-
-
-            if (
-                callSid
-            ) {
-
-                const callLog =
-                    await getCallBySid(
-                        callSid
-                    );
-
-
-                if (
-                    callLog
-                ) {
-
-                    await updateCallLog(
-                        callLog._id,
-                        {
-                            callStatus:
-                                "Failed",
-
-                            notes:
-                                error.message ||
-                                "Call processing failed.",
-                        }
-                    );
-                }
-            }
-
-        } catch (
-            lifecycleError
-        ) {
-
-            console.error(
-                "Call failure logging error:",
-                lifecycleError
-            );
-        }
-
-
-        twiml.say(
-            {
-                voice:
-                    "Polly.Joanna",
-
-                language:
-                    "en-US",
-            },
-
-            "Sorry, something went wrong. Please try again later."
-        );
-
-
-        twiml.hangup();
-
-
-        return res
-            .type("text/xml")
-            .send(
-                twiml.toString()
-            );
+      const failedCall = callSid ? await getCallBySid(callSid) : null;
+      if (failedCall) await updateCallLog(failedCall._id, { callStatus: "Failed", notes: error.message || "Call processing failed." });
+    } catch (lifecycleError) {
+      console.error("[CALL_PROCESS_LIFECYCLE]", lifecycleError?.message || lifecycleError);
     }
+    twiml.say({ voice: "Polly.Joanna", language: "en-US" }, "Sorry, something went wrong. Please try again later.");
+    twiml.hangup();
+    return res.type("text/xml").status(200).send(twiml.toString());
+  }
 };
 
+export const listCallLogsController = async (req, res, next) => {
+  try {
+    const page = req.query?.page === undefined ? 1 : parsePositiveInt(req.query.page, null, 100000);
+    const limit = req.query?.limit === undefined ? 20 : parsePositiveInt(req.query.limit, null, 100);
+    if (page === null) return sendError(res, { status: 400, message: "Page must be a positive integer." });
+    if (limit === null) return sendError(res, { status: 400, message: "Limit must be between 1 and 100." });
 
-/*
-|--------------------------------------------------------------------------
-| List Call Logs
-|--------------------------------------------------------------------------
-|
-| GET /api/call/logs
-|
-|--------------------------------------------------------------------------
-*/
+    const customer = parseString(req.query?.customer) || undefined;
+    const booking = parseString(req.query?.booking) || undefined;
+    if (customer && !isObjectId(customer)) return sendError(res, { status: 400, message: "Invalid customer ID." });
+    if (booking && !isObjectId(booking)) return sendError(res, { status: 400, message: "Invalid booking ID." });
 
-export const listCallLogsController = async (
-    req,
-    res,
-    next
-) => {
+    const result = await listCallLogs({
+      callStatus: parseString(req.query?.callStatus) || undefined,
+      direction: parseString(req.query?.direction) || undefined,
+      phoneNumber: parseString(req.query?.phoneNumber) || undefined,
+      customer,
+      booking,
+      aiOutcome: parseString(req.query?.aiOutcome) || undefined,
+      sentiment: parseString(req.query?.sentiment) || undefined,
+      aiHandled: parseBoolean(req.query?.aiHandled),
+      transferredToHuman: parseBoolean(req.query?.transferredToHuman),
+      from: parseString(req.query?.from) || undefined,
+      to: parseString(req.query?.to) || undefined,
+      page,
+      limit,
+    });
 
-    try {
-
-        const {
-
-            callStatus,
-
-            direction,
-
-            phoneNumber,
-
-            customer,
-
-            booking,
-
-            aiOutcome,
-
-            sentiment,
-
-            aiHandled,
-
-            transferredToHuman,
-
-            from,
-
-            to,
-
-            page,
-
-            limit,
-
-        } = req.query || {};
-
-
-        const result =
-            await listCallLogs({
-
-                callStatus:
-                    stringValue(
-                        callStatus
-                    ) || undefined,
-
-                direction:
-                    stringValue(
-                        direction
-                    ) || undefined,
-
-                phoneNumber:
-                    stringValue(
-                        phoneNumber
-                    ) || undefined,
-
-                customer:
-                    stringValue(
-                        customer
-                    ) || undefined,
-
-                booking:
-                    stringValue(
-                        booking
-                    ) || undefined,
-
-                aiOutcome:
-                    stringValue(
-                        aiOutcome
-                    ) || undefined,
-
-                sentiment:
-                    stringValue(
-                        sentiment
-                    ) || undefined,
-
-                aiHandled:
-                    aiHandled !== undefined
-                        ? stringValue(
-                            aiHandled
-                        )
-                        : undefined,
-
-                transferredToHuman:
-                    transferredToHuman !==
-                    undefined
-                        ? stringValue(
-                            transferredToHuman
-                        )
-                        : undefined,
-
-                from:
-                    stringValue(
-                        from
-                    ) || undefined,
-
-                to:
-                    stringValue(
-                        to
-                    ) || undefined,
-
-                page:
-                    page !== undefined
-                        ? Number(page)
-                        : 1,
-
-                limit:
-                    limit !== undefined
-                        ? Number(limit)
-                        : 20,
-            });
-
-
-        return res.status(
-            200
-        ).json({
-
-            success:
-                true,
-
-            data: {
-                calls:
-                    result.calls,
-
-                pagination: {
-                    total:
-                        result.total,
-
-                    page:
-                        result.page,
-
-                    limit:
-                        result.limit,
-
-                    totalPages:
-                        result.totalPages,
-                },
-            },
-
-            message:
-                "Call logs retrieved successfully.",
-        });
-
-    } catch (error) {
-
-        console.error(
-            "List Call Logs Controller Error:",
-            error
-        );
-
-        return next(
-            error
-        );
-    }
+    return sendSuccess(res, {
+      data: result?.calls || [],
+      meta: { total: result?.total || 0, page: result?.page || page, limit: result?.limit || limit, totalPages: result?.totalPages || 0 },
+      message: "Call logs retrieved successfully.",
+    });
+  } catch (error) {
+    logControllerError("CALL_LIST", error, req);
+    return next(error);
+  }
 };
 
-
-/*
-|--------------------------------------------------------------------------
-| Get Single Call Log
-|--------------------------------------------------------------------------
-|
-| GET /api/call/logs/:id
-|
-|--------------------------------------------------------------------------
-*/
-
-export const getCallLogController = async (
-    req,
-    res,
-    next
-) => {
-
-    try {
-
-        const callId =
-            stringValue(
-                req.params?.id
-            );
-
-
-        if (
-            !callId
-        ) {
-
-            return res
-                .status(400)
-                .json({
-                    success:
-                        false,
-
-                    message:
-                        "Call ID is required.",
-                });
-        }
-
-
-        if (
-            !isValidObjectId(
-                callId
-            )
-        ) {
-
-            return res
-                .status(400)
-                .json({
-                    success:
-                        false,
-
-                    message:
-                        "Invalid call ID.",
-                });
-        }
-
-
-        const call =
-            await getCallById(
-                callId
-            );
-
-
-        return res.status(
-            200
-        ).json({
-
-            success:
-                true,
-
-            data: {
-                call,
-            },
-
-            message:
-                "Call log retrieved successfully.",
-        });
-
-    } catch (error) {
-
-        console.error(
-            "Get Call Log Controller Error:",
-            error
-        );
-
-        return next(
-            error
-        );
-    }
+export const getCallLogController = async (req, res, next) => {
+  try {
+    const id = parseString(req.params?.id);
+    if (!isObjectId(id)) return sendError(res, { status: 400, message: "Invalid call ID." });
+    const call = await getCallById(id);
+    return sendSuccess(res, { data: { call }, message: "Call log retrieved successfully." });
+  } catch (error) {
+    logControllerError("CALL_GET", error, req);
+    return next(error);
+  }
 };
 
-
-/*
-|--------------------------------------------------------------------------
-| AI Outcome Helper
-|--------------------------------------------------------------------------
-*/
-
-const getAiOutcome = (
-    intent
-) => {
-
-    switch (
-        intent
-    ) {
-
-        case "booking":
-        case "booking_ready":
-            return "Booking Created";
-
-        case "cancel":
-            return "Booking Cancelled";
-
-        case "inquiry":
-            return "Information Requested";
-
-        default:
-            return "No Action";
-    }
+const getAiOutcome = (intent) => {
+  switch (String(intent || "").toLowerCase()) {
+    case "booking":
+    case "booking_ready": return "Booking Created";
+    case "cancel": return "Booking Cancelled";
+    case "inquiry": return "Information Requested";
+    default: return "No Action";
+  }
 };
 
-
-/*
-|--------------------------------------------------------------------------
-| Default Export
-|--------------------------------------------------------------------------
-*/
-
-export default {
-
-    incomingCall,
-
-    processCall,
-
-    listCallLogsController,
-
-    getCallLogController,
-
-};
-
-// import twilio from "twilio";
-// // import { processConversation } from "../services/geminiService.js";
-// import { processConversation }
-//   from "../services/voice/deepseekService.js";
-// // import Reservation from "../models/Reservation.js";
-
-// const VoiceResponse = twilio.twiml.VoiceResponse;
-
-// const sessions = new Map();
-
-// const getSession = (caller) => {
-//   if (!sessions.has(caller)) {
-//     sessions.set(caller, {
-//       intent: null,
-//       guests: null,
-//       date: null,
-//       time: null,
-//       name: null,
-//       phone: caller,
-//       confirmed: false,
-//       awaitingConfirmation: false
-//     });
-//   }
-//   return sessions.get(caller);
-// };
-// const updateSession = (session, data) => {
-
-//   for (const key in data) {
-
-//     if (
-//       data[key] !== null &&
-//       data[key] !== undefined
-//     ) {
-//       session[key] = data[key];
-//     }
-
-//   }
-
-// };
-
-// // const updateSession = (session, data) => {
-// //   for (const key in data) {
-// //     if (data[key]) {
-// //       session[key] = data[key];
-// //     }
-// //   }
-// // };
-
-// const clearSession = (caller) => {
-//   sessions.delete(caller);
-// };
-
-// /* ---------------------------------- */
-// /* Incoming Call                      */
-// /* ---------------------------------- */
-// export const incomingCall = (req, res) => {
-//   const twiml = new VoiceResponse();
-
-//   twiml.say(
-//     {
-//       // voice: "alice"
-//       voice: "Polly.Joanna",
-//       language: "en-US",
-//     },
-
-//     "Hello, thanks for calling. How can I help you today?"
-//   );
-
-//   twiml.gather({
-//     input: ["speech"],
-//     action: "https://duvet-twirl-expansive.ngrok-free.dev/api/call/process",
-//     method: "POST",
-//     speechTimeout: "auto"
-//   });
-
-//   res.type("text/xml").send(twiml.toString());
-// };
-
-// /* ---------------------------------- */
-// /* Process Call                       */
-// /* ---------------------------------- */
-// export const processCall = async (req, res) => {
-//   const twiml = new VoiceResponse();
-
-//   try {
-//     const speechText = req.body.SpeechResult || "";
-//     const caller = req.body.From || "unknown";
-
-//     const session = getSession(caller);
-
-//     console.log("User:", speechText);
-
-//     /* ---------------------------------- */
-//     /* Handle Confirmation Step           */
-//     /* ---------------------------------- */
-//     if (session.awaitingConfirmation) {
-//       const reply = speechText.toLowerCase();
-
-//       if (reply.includes("yes") || reply.includes("correct")) {
-//         session.confirmed = true;
-//         session.awaitingConfirmation = false;
-//       } else if (reply.includes("no")) {
-//         session.awaitingConfirmation = false;
-
-//         twiml.say("No problem. What would you like to change?");
-
-//         twiml.gather({
-//           input: ["speech"],
-//           action: "https://duvet-twirl-expansive.ngrok-free.dev/api/call/process",
-//           method: "POST",
-//           speechTimeout: "auto"
-//         });
-
-//         return res.type("text/xml").send(twiml.toString());
-//       } else {
-//         twiml.say("Please say yes or no.");
-
-//         twiml.gather({
-//           input: ["speech"],
-//           action: "https://duvet-twirl-expansive.ngrok-free.dev/api/call/process",
-//           method: "POST",
-//           speechTimeout: "auto"
-//         });
-
-//         return res.type("text/xml").send(twiml.toString());
-//       }
-//     }
-
-//     /* ---------------------------------- */
-//     /* AI Processing                      */
-//     /* ---------------------------------- */
-//     const result = await processConversation(speechText, session);
-//     // const result = {
-//     //   intent: "booking",
-//     //   guests: 2,
-//     //   date: "2026-05-20",
-//     //   time: "7 PM",
-//     //   name: "Akash",
-//     //   reply: "Sure, booking for 2 people. What time would you like?"
-//     // };
-
-//     updateSession(session, result);
-
-//     let message = result.reply;
-
-//     /* ---------------------------------- */
-//     /* Ask Confirmation                   */
-//     /* ---------------------------------- */
-//     if (
-//       session.intent === "booking | booking_ready | inquiry | cancel" &&
-//       session.guests &&
-//       session.date &&
-//       session.time &&
-//       session.name &&
-//       !session.confirmed
-//     ) {
-//       session.awaitingConfirmation = true;
-
-//       message = `Just to confirm, a table for ${session.guests} people on ${session.date} at ${session.time}. Does that sound right?`;
-//     }
-
-//     /* ---------------------------------- */
-//     /* Final Booking                      */
-//     /* ---------------------------------- */
-//     if (
-//       session.intent === "booking | booking_ready | inquiry | cancel" &&
-//       session.guests &&
-//       session.date &&
-//       session.time &&
-//       session.confirmed
-//     ) {
-//       await Reservation.create({
-//         customerName: session.name || "Guest",
-//         phone: session.phone,
-//         guests: session.guests,
-//         date: session.date,
-//         time: session.time
-//       });
-
-//       // message = `Perfect! Your table for ${session.guests} people on ${session.date} at ${session.time} is confirmed. We look forward to serving you!`;
-
-//       // clearSession(caller);
-
-//       message = `Perfect! Your table for ${session.guests} people on ${session.date} at ${session.time} is confirmed. We look forward to serving you. Goodbye!`;
-
-//       twiml.say(
-//         {
-//           voice: "Polly.Joanna",
-//           language: "en-US"
-//         },
-//         message
-//       );
-
-//       twiml.hangup();
-
-//       clearSession(caller);
-
-//       return res.type("text/xml").send(twiml.toString());
-//     }
-
-//     /* ---------------------------------- */
-//     /* Respond                            */
-//     /* ---------------------------------- */
-//     twiml.say({ voice: "alice" }, message);
-
-//     twiml.gather({
-//       input: ["speech"],
-//       action: "https://duvet-twirl-expansive.ngrok-free.dev/api/call/process",
-//       method: "POST",
-//       speechTimeout: "auto"
-//     });
-
-//     res.type("text/xml").send(twiml.toString());
-//   } catch (error) {
-//     console.error(error);
-
-//     twiml.say("Sorry, something went wrong.");
-
-//     res.type("text/xml").send(twiml.toString());
-//   }
-// };
-
+export default { incomingCall, processCall, listCallLogsController, getCallLogController };

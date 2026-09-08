@@ -1,11 +1,2 @@
-import { Outlet } from "react-router-dom";
-
-const AuthLayout = () => {
-    return (
-        <div className="min-h-screen bg-slate-100">
-            <Outlet />
-        </div>
-    );
-};
-
-export default AuthLayout;
+import { RESTAURANT_NAME } from '../utils/constants';
+export default function AuthLayout({ children }) { return <div className="auth-shell"><div className="auth-visual"><div className="auth-visual__content"><span className="eyebrow">RESTAURANT AI</span><div className="auth-logo">R</div><h1>Every call,<br/>table and guest<br/>in one place.</h1><p>AI-assisted restaurant operations for reservations, phone calls and real-time table control.</p><div className="auth-metrics"><span><strong>24/7</strong> phone coverage</span><span><strong>1 view</strong> for every booking</span></div></div></div><div className="auth-panel"><div className="auth-card"><div className="auth-mobile-brand"><div className="brand-mark">R</div><strong>{RESTAURANT_NAME}</strong></div>{children}</div></div></div>; }
