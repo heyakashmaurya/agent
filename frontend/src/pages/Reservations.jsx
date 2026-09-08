@@ -81,14 +81,62 @@ export default function Reservations() {
         setSaving(true);
         setError("");
         try {
+            // const p = await api.post(endpoints.bookings.create, {
+            //     ...form,
+            //     guestCount: Number(form.guestCount),
+            //     tableNumber: form.tableNumber
+            //         ? Number(form.tableNumber)
+            //         : undefined,
+            // });
+
+            // const p = await api.post(endpoints.bookings.create, {
+            //     name: form.customerName.trim(),
+            //     phone: form.customerPhone.trim(),
+            //     bookingDate: form.bookingDate,
+            //     startTime: form.startTime,
+            //     guestCount: Number(form.guestCount),
+            //     specialRequest: form.specialRequest.trim(),
+            //     bookingSource: "dashboard",
+            // });
+
+            // const created = norm(unwrap(p));
             const p = await api.post(endpoints.bookings.create, {
-                ...form,
+                name: form.customerName.trim(),
+                phone: form.customerPhone.trim(),
+                bookingDate: form.bookingDate,
+                startTime: form.startTime,
                 guestCount: Number(form.guestCount),
-                tableNumber: form.tableNumber
-                    ? Number(form.tableNumber)
-                    : undefined,
+                specialRequest: form.specialRequest.trim(),
+                bookingSource: "dashboard",
             });
-            const created = norm(unwrap(p));
+
+            const payload = unwrap(p);
+
+            const booking =
+                payload?.booking || payload?.data?.booking || payload;
+
+            const created = norm(booking);
+
+            if (!created?.id) {
+                throw new Error(
+                    "Booking was created but the server returned an invalid booking.",
+                );
+            }
+
+            setRows((current) => [
+                created,
+                ...current.filter((row) => row.id !== created.id),
+            ]);
+
+            setModal(false);
+
+            setForm((current) => ({
+                ...current,
+                customerName: "",
+                customerPhone: "",
+                specialRequest: "",
+                tableNumber: "",
+            }));
             setRows((x) => [created, ...x.filter((r) => r.id !== created.id)]);
             setModal(false);
             setForm((f) => ({
@@ -152,7 +200,7 @@ export default function Reservations() {
             label: "Guest",
             render: (r) => (
                 <>
-                    <strong>{r.customerName}</strong>
+                    <strong>{r.customer.fullName}</strong>
                     <span className="subtext">
                         {r.customerPhone || "No phone"}
                     </span>
@@ -290,7 +338,7 @@ export default function Reservations() {
                             }
                         />
                     </label>
-                    <label>
+                    {/* <label>
                         Phone
                         <input
                             value={form.customerPhone}
@@ -300,6 +348,21 @@ export default function Reservations() {
                                     customerPhone: e.target.value,
                                 })
                             }
+                        />
+                    </label> */}
+                    <label>
+                        Phone
+                        <input
+                            type="tel"
+                            required
+                            value={form.customerPhone}
+                            onChange={(e) =>
+                                setForm({
+                                    ...form,
+                                    customerPhone: e.target.value,
+                                })
+                            }
+                            placeholder="+1 555 123 4567"
                         />
                     </label>
                     <label>
@@ -352,11 +415,11 @@ export default function Reservations() {
                             }
                         >
                             <option value="">Auto assign</option>
-                            {DEMO_TABLES.map((t) => (
+                            {/* {DEMO_TABLES.map((t) => (
                                 <option key={t.number} value={t.number}>
                                     Table {t.number} · {t.capacity} seats
                                 </option>
-                            ))}
+                            ))} */}
                         </select>
                     </label>
                     <label className="form-grid__wide">

@@ -1,16 +1,302 @@
-import { useEffect, useMemo, useState } from 'react';
-import Panel from '../components/Panel';
-import TableGrid from '../components/TableGrid';
-import StatusBadge from '../components/StatusBadge';
-import Modal from '../components/Modal';
-import Icon from '../components/Icon';
-import { api, endpoints, unwrap } from '../services/api';
-import { DEMO_MODE, DEMO_TABLES } from '../utils/constants';
-function normalize(t){return {...t,id:t._id||t.id,number:t.tableNumber??t.number??t.tableNo,capacity:t.capacity??t.seats??0,status:String(t.status||'available').toLowerCase(),section:t.section||t.location||'Main room'};}
-const values=p=>{const v=unwrap(p);return Array.isArray(v)?v:Array.isArray(v?.items)?v.items:[]};
-export default function Tables(){const [tables,setTables]=useState([]),[busy,setBusy]=useState(true),[error,setError]=useState(''),[modal,setModal]=useState(false),[form,setForm]=useState({tableNumber:'',capacity:2,section:'Main room'}),[saving,setSaving]=useState(false),[filter,setFilter]=useState('all');
- const load=async()=>{setBusy(true);setError('');try{const p=await api.get(endpoints.tables.list);const data=values(p).map(normalize);setTables(data.length?data:(DEMO_MODE?DEMO_TABLES.map(normalize):[]));}catch(e){if(DEMO_MODE)setTables(DEMO_TABLES.map(normalize));else setError(e.message)}finally{setBusy(false)}}; useEffect(()=>{load()},[]);
- const filtered=useMemo(()=>tables.filter(t=>filter==='all'||t.status===filter),[tables,filter]);
- async function status(t,next){try{await api.patch(endpoints.tables.status(t.id),{status:next});setTables(x=>x.map(r=>r.id===t.id?{...r,status:next}:r));}catch(e){if(DEMO_MODE)setTables(x=>x.map(r=>r.id===t.id?{...r,status:next}:r));else setError(e.message)}}
- async function create(e){e.preventDefault();setSaving(true);try{const p=await api.post(endpoints.tables.create,{tableNumber:Number(form.tableNumber),capacity:Number(form.capacity),section:form.section});setTables(x=>[normalize(unwrap(p)),...x]);setModal(false);}catch(e){if(DEMO_MODE){setTables(x=>[{id:`demo-${Date.now()}`,number:Number(form.tableNumber),capacity:Number(form.capacity),section:form.section,status:'available'},...x]);setModal(false)}else setError(e.message)}finally{setSaving(false)}}
- return <div className="page-stack"><div className="page-intro"><div><span className="eyebrow">FLOOR CONTROL</span><h2>Know every table at a glance.</h2><p>Change table states for staff and keep availability in sync with bookings.</p></div><button className="primary-button" onClick={()=>setModal(true)} type="button"><Icon name="plus" size={16}/> Add table</button></div><div className="filter-tabs">{['all','available','reserved','occupied','cleaning'].map(s=><button key={s} type="button" className={filter===s?'filter-tab--active':''} onClick={()=>setFilter(s)}>{s==='all'?'All':s.replace('_',' ')}</button>)}</div>{error&&<div className="alert alert--danger">{error}</div>}<Panel title={`${filtered.length} tables`} subtitle={busy?'Synchronizing…':'Select a table to change status'} action={<button className="icon-button" onClick={load} type="button" title="Refresh"><Icon name="refresh" size={16}/></button>}><TableGrid tables={filtered} onSelect={(t)=>{const next=t.status==='available'?'occupied':t.status==='occupied'?'cleaning':t.status==='cleaning'?'available':'available';status(t,next)}}/><div className="table-helper"><StatusBadge status="available"/> <span>Click a table to cycle staff status. Use the backend admin tools for structural changes.</span></div></Panel><Panel title="Table register" subtitle="Capacity and current state"><div className="register-grid">{filtered.map(t=><div className="register-row" key={t.id}><div><strong>Table {t.number}</strong><span>{t.capacity} seats · {t.section}</span></div><StatusBadge status={t.status}/><select value={t.status} onChange={e=>status(t,e.target.value)}><option value="available">Available</option><option value="reserved">Reserved</option><option value="occupied">Occupied</option><option value="cleaning">Cleaning</option></select></div>)}</div></Panel><Modal open={modal} title="Add table" subtitle="Owner and Manager roles are required by the backend." onClose={()=>setModal(false)}><form className="form-grid" onSubmit={create}><label>Table number<input type="number" min="1" required value={form.tableNumber} onChange={e=>setForm({...form,tableNumber:e.target.value})}/></label><label>Capacity<input type="number" min="1" max="30" required value={form.capacity} onChange={e=>setForm({...form,capacity:e.target.value})}/></label><label className="form-grid__wide">Section<input value={form.section} onChange={e=>setForm({...form,section:e.target.value})}/></label><div className="modal-actions form-grid__wide"><button className="secondary-button" type="button" onClick={()=>setModal(false)}>Close</button><button className="primary-button" disabled={saving} type="submit">{saving?'Adding…':'Add table'}</button></div></form></Modal></div>}
+import { useEffect, useMemo, useState } from "react";
+import Panel from "../components/Panel";
+import TableGrid from "../components/TableGrid";
+import StatusBadge from "../components/StatusBadge";
+import Modal from "../components/Modal";
+import Icon from "../components/Icon";
+import { api, endpoints, unwrap } from "../services/api";
+import { DEMO_MODE, DEMO_TABLES } from "../utils/constants";
+// function normalize(t) {
+//     return {
+//         ...t,
+//         id: t._id || t.id,
+//         number: t.tableNumber ?? t.number ?? t.tableNo,
+//         capacity: t.capacity ?? t.seats ?? 0,
+//         status: String(t.status || "available").toLowerCase(),
+//         section: t.section || t.location || "Main room",
+//     };
+// }
+
+function normalize(t) {
+    return {
+        ...t,
+        id: t._id || t.id,
+        number: t.tableNumber ?? t.number ?? t.tableNo,
+        capacity: t.capacity ?? t.seats ?? 0,
+        status: String(t.status || "Available").toLowerCase(),
+        section: t.section || t.location || "Main room",
+    };
+}
+const values = (p) => {
+    const v = unwrap(p);
+    return Array.isArray(v) ? v : Array.isArray(v?.items) ? v.items : [];
+};
+export default function Tables() {
+    const [tables, setTables] = useState([]),
+        [busy, setBusy] = useState(true),
+        [error, setError] = useState(""),
+        [modal, setModal] = useState(false),
+        [form, setForm] = useState({
+            tableNumber: "",
+            capacity: 2,
+            section: "Main room",
+        }),
+        [saving, setSaving] = useState(false),
+        [filter, setFilter] = useState("all");
+    const load = async () => {
+        setBusy(true);
+        setError("");
+        try {
+            const p = await api.get(endpoints.tables.list);
+            const data = values(p).map(normalize);
+            setTables(
+                data.length
+                    ? data
+                    : DEMO_MODE
+                      ? DEMO_TABLES.map(normalize)
+                      : [],
+            );
+        } catch (e) {
+            if (DEMO_MODE) setTables(DEMO_TABLES.map(normalize));
+            else setError(e.message);
+        } finally {
+            setBusy(false);
+        }
+    };
+    useEffect(() => {
+        load();
+    }, []);
+    const filtered = useMemo(
+        () => tables.filter((t) => filter === "all" || t.status === filter),
+        [tables, filter],
+    );
+    // async function status(t, next) {
+    //     try {
+    //         await api.patch(endpoints.tables.status(t.id), { status: next });
+    //         setTables((x) =>
+    //             x.map((r) => (r.id === t.id ? { ...r, status: next } : r)),
+    //         );
+    //     } catch (e) {
+    //         if (DEMO_MODE)
+    //             setTables((x) =>
+    //                 x.map((r) => (r.id === t.id ? { ...r, status: next } : r)),
+    //             );
+    //         else setError(e.message);
+    //     }
+    // }
+    async function status(t, next) {
+        const apiStatusMap = {
+            available: "Available",
+            reserved: "Reserved",
+            occupied: "Occupied",
+            maintenance: "Maintenance",
+        };
+
+        try {
+            await api.patch(endpoints.tables.status(t.id), {
+                status: apiStatusMap[next],
+            });
+
+            setTables((x) =>
+                x.map((r) => (r.id === t.id ? { ...r, status: next } : r)),
+            );
+        } catch (e) {
+            setError(e.message);
+        }
+    }
+    async function create(e) {
+        e.preventDefault();
+        setSaving(true);
+        try {
+            const p = await api.post(endpoints.tables.create, {
+                tableNumber: Number(form.tableNumber),
+                capacity: Number(form.capacity),
+                section: form.section,
+            });
+            setTables((x) => [normalize(unwrap(p)), ...x]);
+            setModal(false);
+        } catch (e) {
+            if (DEMO_MODE) {
+                setTables((x) => [
+                    {
+                        id: `demo-${Date.now()}`,
+                        number: Number(form.tableNumber),
+                        capacity: Number(form.capacity),
+                        section: form.section,
+                        status: "available",
+                    },
+                    ...x,
+                ]);
+                setModal(false);
+            } else setError(e.message);
+        } finally {
+            setSaving(false);
+        }
+    }
+    return (
+        <div className="page-stack">
+            <div className="page-intro">
+                <div>
+                    <span className="eyebrow">FLOOR CONTROL</span>
+                    <h2>Know every table at a glance.</h2>
+                    <p>
+                        Change table states for staff and keep availability in
+                        sync with bookings.
+                    </p>
+                </div>
+                <button
+                    className="primary-button"
+                    onClick={() => setModal(true)}
+                    type="button"
+                >
+                    <Icon name="plus" size={16} /> Add table
+                </button>
+            </div>
+            <div className="filter-tabs">
+                {["all", "available", "reserved", "occupied", "cleaning"].map(
+                    (s) => (
+                        <button
+                            key={s}
+                            type="button"
+                            className={filter === s ? "filter-tab--active" : ""}
+                            onClick={() => setFilter(s)}
+                        >
+                            {s === "all" ? "All" : s.replace("_", " ")}
+                        </button>
+                    ),
+                )}
+            </div>
+            {error && <div className="alert alert--danger">{error}</div>}
+            <Panel
+                title={`${filtered.length} tables`}
+                subtitle={
+                    busy ? "Synchronizing…" : "Select a table to change status"
+                }
+                action={
+                    <button
+                        className="icon-button"
+                        onClick={load}
+                        type="button"
+                        title="Refresh"
+                    >
+                        <Icon name="refresh" size={16} />
+                    </button>
+                }
+            >
+                <TableGrid
+                    tables={filtered}
+                    onSelect={(t) => {
+                        // const next =
+                        //     t.status === "available"
+                        //         ? "occupied"
+                        //         : t.status === "occupied"
+                        //           ? "cleaning"
+                        //           : t.status === "cleaning"
+                        //             ? "available"
+                        //             : "available";
+                        const next =
+                            t.status === "available"
+                                ? "occupied"
+                                : t.status === "occupied"
+                                  ? "maintenance"
+                                  : "available";
+                        status(t, next);
+                    }}
+                />
+                <div className="table-helper">
+                    <StatusBadge status="available" />{" "}
+                    <span>
+                        Click a table to cycle staff status. Use the backend
+                        admin tools for structural changes.
+                    </span>
+                </div>
+            </Panel>
+            <Panel title="Table register" subtitle="Capacity and current state">
+                <div className="register-grid">
+                    {filtered.map((t) => (
+                        <div className="register-row" key={t.id}>
+                            <div>
+                                <strong>Table {t.number}</strong>
+                                <span>
+                                    {t.capacity} seats · {t.section}
+                                </span>
+                            </div>
+                            <StatusBadge status={t.status} />
+                            <select
+                                value={t.status}
+                                onChange={(e) => status(t, e.target.value)}
+                            >
+                                <option value="available">Available</option>
+                                <option value="reserved">Reserved</option>
+                                <option value="occupied">Occupied</option>
+                                <option value="cleaning">Cleaning</option>
+                            </select>
+                        </div>
+                    ))}
+                </div>
+            </Panel>
+            <Modal
+                open={modal}
+                title="Add table"
+                subtitle="Owner and Manager roles are required by the backend."
+                onClose={() => setModal(false)}
+            >
+                <form className="form-grid" onSubmit={create}>
+                    <label>
+                        Table number
+                        <input
+                            type="number"
+                            min="1"
+                            required
+                            value={form.tableNumber}
+                            onChange={(e) =>
+                                setForm({
+                                    ...form,
+                                    tableNumber: e.target.value,
+                                })
+                            }
+                        />
+                    </label>
+                    <label>
+                        Capacity
+                        <input
+                            type="number"
+                            min="1"
+                            max="30"
+                            required
+                            value={form.capacity}
+                            onChange={(e) =>
+                                setForm({ ...form, capacity: e.target.value })
+                            }
+                        />
+                    </label>
+                    <label className="form-grid__wide">
+                        Section
+                        <input
+                            value={form.section}
+                            onChange={(e) =>
+                                setForm({ ...form, section: e.target.value })
+                            }
+                        />
+                    </label>
+                    <div className="modal-actions form-grid__wide">
+                        <button
+                            className="secondary-button"
+                            type="button"
+                            onClick={() => setModal(false)}
+                        >
+                            Close
+                        </button>
+                        <button
+                            className="primary-button"
+                            disabled={saving}
+                            type="submit"
+                        >
+                            {saving ? "Adding…" : "Add table"}
+                        </button>
+                    </div>
+                </form>
+            </Modal>
+        </div>
+    );
+}

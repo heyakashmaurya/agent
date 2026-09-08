@@ -138,7 +138,7 @@ export const createBooking = async ({
 
             status: "confirmed",
 
-            bookingSource: "ai_voice",
+            bookingSource: bookingSource || "dashboard",
 
         });
 
