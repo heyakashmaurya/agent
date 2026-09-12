@@ -1,13 +1,190 @@
-import Customer from "../models/Customer.js";
 import Booking from "../models/Booking.js";
+import Table from "../models/Table.js";
+import CallLog from "../models/CallLog.js";
+import Customer from "../models/Customer.js";
 import {
-  isObjectId,
-  parsePositiveInt,
   parseString,
-  sendError,
   sendSuccess,
   logControllerError,
+    isObjectId,
+  parsePositiveInt,
+  sendError,
 } from "./_controllerUtils.js";
+
+
+function localDayRange(dateString) {
+  const now = new Date();
+  if (!dateString) {
+    const start = new Date(
+      now.getFullYear(),
+      now.getMonth(),
+      now.getDate(),
+      0,
+      0,
+      0,
+      0,
+    );
+    const end = new Date(
+      now.getFullYear(),
+      now.getMonth(),
+      now.getDate(),
+      23,
+      59,
+      59,
+      999,
+    );
+    return { start, end };
+  }
+  const match = /^([0-9]{4})-([0-9]{2})-([0-9]{2})$/.exec(dateString);
+  if (!match) throw new Error("Dashboard date must use YYYY-MM-DD format.");
+  const [, year, month, day] = match;
+  const start = new Date(
+    Number(year),
+    Number(month) - 1,
+    Number(day),
+    0,
+    0,
+    0,
+    0,
+  );
+  const end = new Date(
+    Number(year),
+    Number(month) - 1,
+    Number(day),
+    23,
+    59,
+    59,
+    999,
+  );
+  return { start, end };
+}
+
+export const getDashboardOverview = async (req, res, next) => {
+  try {
+    const { start, end } = localDayRange(parseString(req.query?.date));
+    const bookingBase = { isDeleted: false };
+    const dayBookingQuery = {
+      ...bookingBase,
+      bookingDate: { $gte: start, $lte: end },
+    };
+    const activeTodayQuery = {
+      ...dayBookingQuery,
+      status: { $nin: ["cancelled", "no_show"] },
+    };
+    const [
+      todayBookings,
+      upcomingBookings,
+      totalBookings,
+      tables,
+      activeCustomers,
+      todayCalls,
+      recentBookings,
+      recentCalls,
+      statusCounts,
+      bookingVolume,
+    ] = await Promise.all([
+      Booking.countDocuments(activeTodayQuery),
+      Booking.countDocuments({
+        ...bookingBase,
+        bookingDate: { $gt: end },
+        status: { $nin: ["cancelled", "no_show"] },
+      }),
+      Booking.countDocuments(bookingBase),
+      Table.find({ isDeleted: false, isActive: true })
+        .sort({ tableNumber: 1 })
+        .lean(),
+      Customer.countDocuments({ isDeleted: false, isBlocked: false }),
+      CallLog.countDocuments({ startedAt: { $gte: start, $lte: end } }),
+      Booking.find(activeTodayQuery)
+        .populate("customer table")
+        .sort({ startTime: 1, createdAt: -1 })
+        .limit(20)
+        .lean(),
+      CallLog.find({ startedAt: { $gte: start, $lte: end } })
+        .populate("customer booking")
+        .sort({ startedAt: -1 })
+        .limit(20)
+        .lean(),
+      Booking.aggregate([
+        { $match: activeTodayQuery },
+        { $group: { _id: "$status", count: { $sum: 1 } } },
+      ]),
+      Booking.aggregate([
+        {
+          $match: {
+            ...bookingBase,
+            bookingDate: {
+              $gte: new Date(
+                start.getFullYear(),
+                start.getMonth(),
+                start.getDate() - 6,
+              ),
+              $lte: end,
+            },
+          },
+        },
+        {
+          $group: {
+            _id: {
+              $dateToString: {
+                format: "%Y-%m-%d",
+                date: "$bookingDate",
+                timezone: process.env.APP_TIMEZONE || "Asia/Kolkata",
+              },
+            },
+            count: { $sum: 1 },
+          },
+        },
+        { $sort: { _id: 1 } },
+      ]),
+    ]);
+
+    const volumeMap = new Map(
+      bookingVolume.map((item) => [item._id, item.count]),
+    );
+
+    return sendSuccess(res, {
+      data: {
+        date: `${start.getFullYear()}-${String(start.getMonth() + 1).padStart(2, "0")}-${String(start.getDate()).padStart(2, "0")}`,
+        metrics: {
+          todayBookings,
+          upcomingBookings,
+          totalBookings,
+          totalTables: tables.length,
+          occupiedTables: tables.filter(
+            (table) => String(table.status).toLowerCase() === "occupied",
+          ).length,
+          availableTables: tables.filter(
+            (table) => String(table.status).toLowerCase() === "available",
+          ).length,
+          activeCustomers,
+          todayCalls,
+        },
+        bookingStatus: Object.fromEntries(
+          statusCounts.map((item) => [item._id, item.count]),
+        ),
+        bookingVolume: Array.from(volumeMap, ([date, count]) => ({
+          date,
+          count,
+        })),
+        tables,
+        recentBookings,
+        recentCalls,
+      },
+      message: "Dashboard overview retrieved successfully.",
+    });
+  } catch (error) {
+    logControllerError("DASHBOARD_OVERVIEW", error, req);
+    return next(error);
+  }
+};
+
+// export default { getDashboardOverview };
+
+
+
+
+
 
 const normalizePhone = (value) => parseString(value).replace(/\s+/g, "");
 
