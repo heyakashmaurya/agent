@@ -1,4 +1,3 @@
-
 import mongoose from "mongoose";
 import { fileURLToPath } from "node:url";
 import dotenv from "dotenv";
@@ -9,52 +8,86 @@ import {
     defineAgent,
     voice,
 } from "@livekit/agents";
+import * as silero from "@livekit/agents-plugin-silero";
 
 import connectDB from "../config/db.js";
 import { createLivekitRestaurantTools } from "../tools/livekitTools.js";
-
 import { createDeepgramSTT } from "../services/voice/deepgramSTT.js";
 import { deepseekLLM } from "../services/voice/livekitDeepseek.js";
 import { elevenlabsTTS } from "../services/voice/livekitElevenLabsTTS.js";
-
 import getRestaurantAgentPrompt from "../prompts/restaurantAgentPrompt.js";
 import { extractCallerPhone, maskPhone } from "../services/voice/callerIdentity.js";
 
 dotenv.config();
 
-console.log(
-    "Deepgram Key Loaded:",
-    !!process.env.DEEPGRAM_API_KEY
-);
+const endpointingMinDelay = Number(process.env.VOICE_MIN_ENDPOINT_DELAY_MS || 150);
+const endpointingMaxDelay = Number(process.env.VOICE_MAX_ENDPOINT_DELAY_MS || 750);
+const interruptionMinDuration = Number(process.env.VOICE_INTERRUPTION_MIN_MS || 350);
+const maxSpeechDuration = Number(process.env.VOICE_PREEMPTIVE_MAX_SPEECH_MS || 10000);
+
+function installLatencyLogging(session, stt, llm, tts) {
+    // Per-plugin metrics are the most useful signal when tuning a voice agent.
+    // They do not block the call flow.
+    stt?.on?.("metrics_collected", (m) => {
+        if (m?.type === "stt_metrics") {
+            console.log(`⚡ STT ttfb=${Math.round(m.durationMs ?? 0)}ms label=${m.label}`);
+        }
+    });
+
+    llm?.on?.("metrics_collected", (m) => {
+        if (m?.type === "llm_metrics") {
+            console.log(
+                `⚡ LLM ttft=${Math.round(m.ttftMs ?? 0)}ms duration=${Math.round(m.durationMs ?? 0)}ms tokens=${m.completionTokens ?? 0}`
+            );
+        }
+    });
+
+    tts?.on?.("metrics_collected", (m) => {
+        if (m?.type === "tts_metrics") {
+            console.log(
+                `⚡ TTS ttfb=${Math.round(m.ttfbMs ?? 0)}ms duration=${Math.round(m.durationMs ?? 0)}ms chars=${m.charactersCount ?? 0}`
+            );
+        }
+    });
+
+    session.on(voice.AgentSessionEventTypes.MetricsCollected, (ev) => {
+        const m = ev?.metrics;
+        if (!m?.speechId) return;
+
+        if (m.type === "eou_metrics") {
+            console.log(
+                `⚡ EOU delay=${Math.round(m.endOfUtteranceDelayMs ?? 0)}ms transcript=${Math.round(m.transcriptionDelayMs ?? 0)}ms`
+            );
+        }
+    });
+}
 
 export default defineAgent({
+    prewarm: async (proc) => {
+        // Prewarm local VAD once per worker process so the first phone call
+        // doesn't pay the model-load cost.
+        proc.userData.vad = await silero.VAD.load({
+            minSilenceDuration: Number(process.env.VOICE_VAD_MIN_SILENCE_MS || 280),
+            minSpeechDuration: Number(process.env.VOICE_VAD_MIN_SPEECH_MS || 40),
+            activationThreshold: Number(process.env.VOICE_VAD_ACTIVATION_THRESHOLD || 0.45),
+            prefixPaddingDuration: Number(process.env.VOICE_VAD_PREFIX_PADDING_MS || 180),
+        });
+
+        console.log("✅ Silero VAD prewarmed");
+    },
+
     entry: async (ctx) => {
         await connectDB();
 
-        console.log("✅ MongoDB connected");
-        console.log(
-            "MongoDB readyState:",
-            mongoose.connection.readyState
-        );
-
         await ctx.connect();
 
-        console.log(
-            "✅ Connected to room:",
-            ctx.room.name
-        );
+        console.log("✅ Connected to room:", ctx.room.name);
+        console.log("MongoDB readyState:", mongoose.connection.readyState);
 
-        // LiveKit exposes the telephony caller/destination phone number on
-        // SIP participant attributes as sip.phoneNumber. This keeps phone
-        // collection outside the LLM and scoped to the active call.
         const participant = await ctx.waitForParticipant();
         const callerPhone = extractCallerPhone(participant);
-        const callerPhoneMasked = maskPhone(callerPhone);
 
-        console.log(
-            "☎️ Caller phone available:",
-            callerPhoneMasked
-        );
+        console.log("☎️ Caller phone available:", maskPhone(callerPhone));
 
         const stt = createDeepgramSTT();
         const tts = elevenlabsTTS();
@@ -63,49 +96,78 @@ export default defineAgent({
         const agent = new voice.Agent({
             instructions: getRestaurantAgentPrompt({ callerPhone }),
             tools,
+            minConsecutiveSpeechDelay: 0,
         });
 
-        console.log("🤖 Restaurant voice agent initialized");
+        const useFlux = String(process.env.VOICE_STT_MODE || "flux").toLowerCase() === "flux";
 
         const session = new voice.AgentSession({
             stt,
             llm: deepseekLLM,
             tts,
+            vad: procVad(ctx),
+            turnHandling: {
+                // Flux has its own semantic EOT detector. Nova uses LiveKit's
+                // default audio turn detector.
+                turnDetection: useFlux ? "stt" : undefined,
+                endpointing: {
+                    mode: "fixed",
+                    minDelay: endpointingMinDelay,
+                    maxDelay: endpointingMaxDelay,
+                },
+                interruption: {
+                    mode: "adaptive",
+                    minDuration: interruptionMinDuration,
+                    minWords: 1,
+                    falseInterruptionTimeout: 1200,
+                    resumeFalseInterruption: true,
+                },
+                preemptiveGeneration: {
+                    enabled: true,
+                    preemptiveTts: true,
+                    maxSpeechDuration,
+                    maxRetries: 2,
+                },
+            },
         });
+
+        installLatencyLogging(session, stt, deepseekLLM, tts);
 
         await session.start({
             agent,
             room: ctx.room,
         });
 
-        console.log("✅ Agent Session Started");
+        // Do not add an artificial 1-second greeting delay.
+        try {
+            await session.say(
+                "Welcome to our restaurant. How can I help you today?"
+            );
+        } catch (err) {
+            console.error("Greeting failed:", err);
+        }
 
-        setTimeout(async () => {
+        console.log("✅ Low-latency Agent Session Started", {
+            stt: useFlux ? "deepgram-flux" : "deepgram-nova-3",
+            endpointingMinDelay,
+            endpointingMaxDelay,
+            preemptiveTts: true,
+        });
+
+        ctx.room.on("participantDisconnected", async (disconnectedParticipant) => {
+            console.log(`📞 ${disconnectedParticipant.identity} disconnected`);
             try {
-                await session.say(
-                    "Welcome to our restaurant. How can I help you today?"
-                );
+                await session.close();
             } catch (err) {
-                console.error("Greeting failed:", err);
+                console.error("Session close failed:", err);
             }
-        }, 1000);
-
-        ctx.room.on(
-            "participantDisconnected",
-            async (participant) => {
-                console.log(
-                    `📞 ${participant.identity} disconnected`
-                );
-
-                try {
-                    await session.close();
-                } catch (err) {
-                    console.error(err);
-                }
-            }
-        );
+        });
     },
 });
+
+function procVad(ctx) {
+    return ctx.proc.userData.vad;
+}
 
 cli.runApp(
     new WorkerOptions({
@@ -116,364 +178,3 @@ cli.runApp(
         apiSecret: process.env.LIVEKIT_API_SECRET,
     })
 );
-
-
-
-
-// import mongoose from "mongoose";
-// import { fileURLToPath } from "node:url";
-// import dotenv from "dotenv";
-
-// import {
-//     WorkerOptions,
-//     cli,
-//     defineAgent,
-//     voice,
-// } from "@livekit/agents";
-
-// import connectDB from "../config/db.js";
-// import { createLivekitRestaurantTools } from "../tools/livekitTools.js";
-
-// import { createDeepgramSTT } from "../services/voice/deepgramSTT.js";
-// import { deepseekLLM } from "../services/voice/livekitDeepseek.js";
-// import { elevenlabsTTS } from "../services/voice/livekitElevenLabsTTS.js";
-
-// import getRestaurantAgentPrompt from "../prompts/restaurantAgentPrompt.js";
-
-// dotenv.config();
-
-// console.log(
-//     "Deepgram Key Loaded:",
-//     !!process.env.DEEPGRAM_API_KEY
-// );
-
-// export default defineAgent({
-//     entry: async (ctx) => {
-//         await connectDB();
-
-//         console.log("✅ MongoDB connected");
-//         console.log(
-//             "MongoDB readyState:",
-//             mongoose.connection.readyState
-//         );
-
-//         await ctx.connect();
-
-//         console.log(
-//             "✅ Connected to room:",
-//             ctx.room.name
-//         );
-
-//         const stt = createDeepgramSTT();
-//         const tts = elevenlabsTTS(); 
-
-//         const agent = new voice.Agent({
-//             instructions: getRestaurantAgentPrompt,
-//             tools: livekitRestaurantTools,
-//         });
-
-//         console.log("========== LLM DEBUG ==========");
-//         console.log(
-//             "DeepSeek key exists:",
-//             !!process.env.DEEPSEEK_API_KEY
-//         );
-//         console.log(
-//             "DeepSeek key prefix:",
-//             process.env.DEEPSEEK_API_KEY?.slice(0, 8)
-//         );
-//         console.log(
-//             "DeepSeek LLM exists:",
-//             !!deepseekLLM
-//         );
-//         console.log("================================");
-//         console.log("================================");
-
-//         const session = new voice.AgentSession({
-//             stt,
-//             llm: deepseekLLM,
-//             tts,
-//         });
-
-//         await session.start({
-//             agent,
-//             room: ctx.room,
-//         });
-
-//         console.log("✅ Agent Session Started");
-
-//         setTimeout(async () => {
-//             try {
-//                 await session.say(
-//                     "Welcome to our restaurant. How can I help you today?"
-//                 );
-//             } catch (err) {
-//                 console.error(
-//                     "Greeting failed:",
-//                     err
-//                 );
-//             }
-//         }, 1000);
-
-//         ctx.room.on(
-//             "participantDisconnected",
-//             async (participant) => {
-//                 console.log(
-//                     `📞 ${participant.identity} disconnected`
-//                 );
-
-//                 try {
-//                     await session.close();
-//                 } catch (err) {
-//                     console.error(err);
-//                 }
-//             }
-//         );
-
-//         await new Promise(() => { });
-//     },
-// });
-
-// cli.runApp(
-//     new WorkerOptions({
-//         agent: fileURLToPath(import.meta.url),
-//         agentName: "restaurant-agent",
-//         wsURL: process.env.LIVEKIT_URL,
-//         apiKey: process.env.LIVEKIT_API_KEY,
-//         apiSecret: process.env.LIVEKIT_API_SECRET,
-//     })
-// );
-
-
-
-
-// import mongoose from "mongoose";
-// import connectDB from "../config/db.js";
-
-// import {
-//     WorkerOptions,
-//     cli,
-//     defineAgent,
-//     voice,
-// } from "@livekit/agents";
-
-// import { llm } from "@livekit/agents";
-
-// import { createLivekitRestaurantTools } from "../tools/livekitTools.js";
-// // import restaurantTools from "../tools/index.js";
-
-// import { fileURLToPath } from "node:url";
-// import dotenv from "dotenv";
-
-// dotenv.config();
-
-// import { createDeepgramSTT } from "../services/voice/deepgramSTT.js";
-// // import { LiveKitSarvamTTS } from "../services/livekitSarvamTTS.js";
-
-// import { deepseekLLM } from "../services/voice/livekitDeepseek.js";
-// import { elevenlabsTTS } from "../services/voice/livekitElevenLabsTTS.js";
-// // import { inference } from "@livekit/agents";
-
-// // const vad = new inference.VAD({
-// //     model: "silero",
-// //     minSpeechDuration: 0.05,
-// //     minSilenceDuration: 0.3,
-// // });
-
-// console.log(
-//     "Deepgram Key Loaded:",
-//     !!process.env.DEEPGRAM_API_KEY
-// );
-
-// export default defineAgent({
-
-//     entry: async (ctx) => {
-
-//         await connectDB();
-
-//     console.log("✅ MongoDB connected for agent");
-//     console.log("MongoDB readyState:", mongoose.connection.readyState);
-// console.log("MongoDB host:", mongoose.connection.host);
-
-//         console.log("🚀 Agent job started");
-
-//         /*
-//             Connect Agent to the room
-//         */
-//         await ctx.connect();
-
-//         console.log(
-//             "✅ Connected to room:",
-//             ctx.room.name
-//         );
-
-//         /*
-//             STT, TTS and LLM Setup
-//         */
-//         const stt = createDeepgramSTT();
-//         // const tts = new LiveKitSarvamTTS();
-//         const tts = elevenlabsTTS();
-
-//         console.log("✅ STT & TTS Pipeline initialized");
-
-//         /*
-//             Agent Brain Instructions
-//         */
-
-//             const agent = new voice.Agent({
-//   instructions: `
-// Restaurant receptionist. Start with: "Welcome to our restaurant. How can I help you today?"
-
-// Collect name, guests, date, and time. Ask one question at a time. Keep replies short and natural.
-
-// Use the provided booking tools for availability, create, retrieve, list, update, and cancel operations. Never claim success unless the tool succeeds. Report tool errors honestly.
-// `,
-//   tools: livekitRestaurantTools,
-// });
-
-// //             const agent = new voice.Agent({
-// //     instructions: `
-// // You are an AI restaurant receptionist.
-
-// // Your job is to help customers with restaurant bookings.
-
-// // Rules:
-
-// // 1. Start every conversation with:
-// //    "Welcome to our restaurant. How can I help you today?"
-
-// // 2. Collect:
-// //    - Customer name
-// //    - Number of guests
-// //    - Date
-// //    - Time
-
-// // 3. Ask only one question at a time.
-
-// // 4. Keep replies short and natural.
-
-// // 5. Confirm booking details before final confirmation.
-
-// // 6. Use the available booking tools whenever you need to:
-// //    - check table availability
-// //    - create a booking
-// //    - retrieve a booking
-// //    - list bookings
-// //    - update a booking
-// //    - cancel a booking
-
-// // 7. Never claim that a booking was created, updated, retrieved, or cancelled unless the corresponding tool succeeds.
-
-// // 8. When a tool returns an error, explain the problem naturally to the customer and do not pretend the operation succeeded.
-
-// // Example:
-
-// // Customer:
-// // I want a table tomorrow at 7 PM.
-
-// // Assistant:
-// // Sure. How many guests will be joining you?
-// //     `,
-
-// //     tools: livekitRestaurantTools,
-// // });
-// //         const agent = new voice.Agent({
-// //             instructions: `
-// // You are an AI restaurant receptionist.
-// // Your job is to book restaurant tables.
-
-// // Rules:
-// // 1. Start every conversation with: "Welcome to our restaurant. How can I help you today?"
-// // 2. Collect:
-// // - Customer name
-// // - Number of guests
-// // - Date
-// // - Time
-// // 3. Ask only one question at a time.
-// // 4. Keep replies short and natural.
-// // 5. Confirm booking details before final confirmation.
-
-// // Example:
-// // Customer: I want a table tomorrow at 7 PM.
-// // Assistant: Sure. How many guests will be joining you?
-// //             `
-// //         });
-
-//         /*
-//             Voice Pipeline Session Configuration
-//         */
-//         const session = new voice.AgentSession({
-//             stt,
-//             llm: deepseekLLM,
-//             tts,
-//             // vad
-//         });
-
-//         console.log("Starting Agent Session...");
-
-//         // Wait for any human participant to match up against or get the first connected user
-//         const participant = ctx.room.remoteParticipants.values().next().value;
-
-//         await session.start({
-//             agent,
-//             room: ctx.room,
-//             // participant: participant // Tells the session who to listen to and speak with!
-//         });
-
-//         ctx.room.on("participantDisconnected", async (participant) => {
-//     console.log(`📞 ${participant.identity} disconnected`);
-
-//     try {
-//         await session.close();
-//     } catch (err) {
-//         console.error(err);
-//     }
-// });
-
-//         console.log("✅ Agent Session Started");
-
-//         /*
-//             🔥 TRIGGER GREETING MANDATORY FIX:
-//             Since the agent is connected, force it to speak the welcome message immediately!
-//         */
-//         setTimeout(async () => {
-//             try {
-//                 console.log("🗣️ Triggering initial agent welcome greeting...");
-//                 await session.say("Welcome to our restaurant. How can I help you today?");
-//             } catch (err) {
-//                 console.error("❌ Failed to say greeting phrase:", err);
-//             }
-//         }, 1500);
-
-//         /*
-//             Debug local tracks to ensure publishing is active
-//         */
-//         setTimeout(() => {
-//             console.log("Published tracks count:", ctx.room.localParticipant.trackPublications.size);
-//             for (const [sid, publication] of ctx.room.localParticipant.trackPublications) {
-//                 console.log({
-//                     sid,
-//                     kind: publication.kind,
-//                     name: publication.name,
-//                     subscribed: publication.isSubscribed
-//                 });
-//             }
-//         }, 3000);
-
-//         /*
-//             Keep worker alive
-//         */
-//         await new Promise(() => {});
-//     },
-
-// });
-
-// cli.runApp(
-//     new WorkerOptions({
-//         agent: fileURLToPath(import.meta.url),
-//         agentName: "restaurant-agent",
-//         wsURL: process.env.LIVEKIT_URL,
-//         apiKey: process.env.LIVEKIT_API_KEY,
-//         apiSecret: process.env.LIVEKIT_API_SECRET,
-//     })
-// );
-
