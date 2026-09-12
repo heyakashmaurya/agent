@@ -22,6 +22,7 @@ export const STATUS_META = {
   available: { label: 'Available', tone: 'success' },
   reserved: { label: 'Reserved', tone: 'warning' },
   occupied: { label: 'Occupied', tone: 'danger' },
+  maintenance: { label: 'Maintenance', tone: 'neutral' },
   cleaning: { label: 'Cleaning', tone: 'neutral' },
 };
 

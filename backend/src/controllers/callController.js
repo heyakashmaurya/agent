@@ -72,7 +72,7 @@ const ensureCallLog = async ({ callSid, phoneNumber, direction = "Incoming", cal
     const existing = await getCallBySid(callSid);
     if (existing) return existing;
   }
-  return createCallLog({ callSid, phoneNumber, direction, callStatus, aiHandled: true });
+  return createCallLog({ callSid, phoneNumber, direction, callStatus, provider: "twilio", aiHandled: true });
 };
 
 const sayAndGather = (twiml, message) => {
@@ -243,6 +243,8 @@ export const listCallLogsController = async (req, res, next) => {
 
     const customer = parseString(req.query?.customer) || undefined;
     const booking = parseString(req.query?.booking) || undefined;
+    const campaign = parseString(req.query?.campaign) || undefined;
+    if (campaign && !isObjectId(campaign)) return sendError(res, { status: 400, message: "Invalid campaign ID." });
     if (customer && !isObjectId(customer)) return sendError(res, { status: 400, message: "Invalid customer ID." });
     if (booking && !isObjectId(booking)) return sendError(res, { status: 400, message: "Invalid booking ID." });
 
@@ -252,6 +254,9 @@ export const listCallLogsController = async (req, res, next) => {
       phoneNumber: parseString(req.query?.phoneNumber) || undefined,
       customer,
       booking,
+      campaign,
+      provider: parseString(req.query?.provider) || undefined,
+      search: parseString(req.query?.search) || undefined,
       aiOutcome: parseString(req.query?.aiOutcome) || undefined,
       sentiment: parseString(req.query?.sentiment) || undefined,
       aiHandled: parseBoolean(req.query?.aiHandled),

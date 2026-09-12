@@ -26,7 +26,7 @@ export const getBooking = async ({
     bookingId,
     confirmationCode,
     phone,
-}) => {
+}, context = {}) => {
     try {
         /*
         |--------------------------------------------------------------------------
@@ -45,9 +45,11 @@ export const getBooking = async ({
                 : "";
 
         const normalizedPhone =
-            typeof phone === "string"
+            typeof phone === "string" && phone.trim()
                 ? phone.trim()
-                : "";
+                : (typeof context?.callerPhone === "string"
+                    ? context.callerPhone.trim()
+                    : "");
 
         /*
         |--------------------------------------------------------------------------

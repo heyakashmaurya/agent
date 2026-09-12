@@ -1462,3 +1462,8 @@
         text-align: left;
     }
 }
+
+/* Provider/call/campaign additions */
+.transcript-box{white-space:pre-wrap;max-height:320px;overflow:auto;background:var(--bg);padding:14px;border-radius:12px;font:inherit}.audio-player{width:100%;margin-top:12px}.helper-text{font-size:13px;color:var(--muted)}
+
+.confirmation-code{letter-spacing:.06em;font-variant-numeric:tabular-nums}.preview-box{margin-top:16px}.audio-player{width:100%;margin:12px 0}.transcript-box{white-space:pre-wrap;max-height:360px;overflow:auto}.stack-status{display:grid;gap:10px}.stack-status>div{display:flex;justify-content:space-between;gap:16px;padding:10px 12px;border:1px solid var(--line,#e5e7eb);border-radius:12px}.form-grid__wide{grid-column:1/-1}

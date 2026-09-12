@@ -1,270 +1,31 @@
 import Booking from "../../models/Booking.js";
 
-/*
-|--------------------------------------------------------------------------
-| List Bookings Service
-|--------------------------------------------------------------------------
-|
-| Retrieves multiple bookings with optional filters.
-|
-| Supported filters:
-| - bookingDate
-| - status
-| - customer
-| - bookingSource
-| - paymentStatus
-| - page
-| - limit
-|
-| This service:
-| - excludes deleted bookings
-| - supports pagination
-| - populates customer
-| - populates table
-| - returns total count
-|
-|--------------------------------------------------------------------------
-*/
-
-export const listBookings = async ({
-    bookingDate,
-    status,
-    customer,
-    bookingSource,
-    paymentStatus,
-    page = 1,
-    limit = 20,
-} = {}) => {
-    try {
-
-        /*
-        |--------------------------------------------------------------------------
-        | Build Query
-        |--------------------------------------------------------------------------
-        */
-
-        const query = {
-            isDeleted: false,
-        };
-
-        /*
-        |--------------------------------------------------------------------------
-        | Booking Date Filter
-        |--------------------------------------------------------------------------
-        */
-
-        if (bookingDate) {
-
-            const date = new Date(bookingDate);
-
-            if (Number.isNaN(date.getTime())) {
-
-                return {
-                    success: false,
-                    bookings: [],
-                    total: 0,
-                    page: 1,
-                    limit,
-                    totalPages: 0,
-                    message: "Invalid booking date.",
-                };
-
-            }
-
-            /*
-            |----------------------------------------------------------------------
-            | Create Start & End Of Day
-            |----------------------------------------------------------------------
-            */
-
-            const startOfDay = new Date(date);
-
-            startOfDay.setHours(
-                0,
-                0,
-                0,
-                0
-            );
-
-            const endOfDay = new Date(date);
-
-            endOfDay.setHours(
-                23,
-                59,
-                59,
-                999
-            );
-
-            query.bookingDate = {
-                $gte: startOfDay,
-                $lte: endOfDay,
-            };
-        }
-
-        /*
-        |--------------------------------------------------------------------------
-        | Status Filter
-        |--------------------------------------------------------------------------
-        */
-
-        if (status) {
-
-            query.status = status;
-
-        }
-
-        /*
-        |--------------------------------------------------------------------------
-        | Customer Filter
-        |--------------------------------------------------------------------------
-        */
-
-        if (customer) {
-
-            query.customer = customer;
-
-        }
-
-        /*
-        |--------------------------------------------------------------------------
-        | Booking Source Filter
-        |--------------------------------------------------------------------------
-        */
-
-        if (bookingSource) {
-
-            query.bookingSource = bookingSource;
-
-        }
-
-        /*
-        |--------------------------------------------------------------------------
-        | Payment Status Filter
-        |--------------------------------------------------------------------------
-        */
-
-        if (paymentStatus) {
-
-            query.paymentStatus = paymentStatus;
-
-        }
-
-        /*
-        |--------------------------------------------------------------------------
-        | Validate Pagination
-        |--------------------------------------------------------------------------
-        */
-
-        let currentPage = Number(page);
-
-        let currentLimit = Number(limit);
-
-        if (
-            !Number.isInteger(currentPage) ||
-            currentPage < 1
-        ) {
-            currentPage = 1;
-        }
-
-        if (
-            !Number.isInteger(currentLimit) ||
-            currentLimit < 1
-        ) {
-            currentLimit = 20;
-        }
-
-        /*
-        |--------------------------------------------------------------------------
-        | Maximum Limit
-        |--------------------------------------------------------------------------
-        |
-        | Prevent extremely large queries.
-        |
-        */
-
-        if (currentLimit > 100) {
-
-            currentLimit = 100;
-
-        }
-
-        const skip =
-            (currentPage - 1) * currentLimit;
-
-        /*
-        |--------------------------------------------------------------------------
-        | Count Bookings
-        |--------------------------------------------------------------------------
-        */
-
-        const total =
-            await Booking.countDocuments(query);
-
-        /*
-        |--------------------------------------------------------------------------
-        | Fetch Bookings
-        |--------------------------------------------------------------------------
-        */
-
-        const bookings =
-            await Booking.find(query)
-                .populate("customer")
-                .populate("table")
-                .sort({
-                    bookingDate: 1,
-                    startTime: 1,
-                    createdAt: -1,
-                })
-                .skip(skip)
-                .limit(currentLimit);
-
-        /*
-        |--------------------------------------------------------------------------
-        | Calculate Total Pages
-        |--------------------------------------------------------------------------
-        */
-
-        const totalPages =
-            Math.ceil(total / currentLimit);
-
-        /*
-        |--------------------------------------------------------------------------
-        | Success
-        |--------------------------------------------------------------------------
-        */
-
-        return {
-
-            success: true,
-
-            bookings,
-
-            total,
-
-            page: currentPage,
-
-            limit: currentLimit,
-
-            totalPages,
-
-            message: "Bookings retrieved successfully.",
-
-        };
-
-    } catch (error) {
-
-        /*
-        |--------------------------------------------------------------------------
-        | Error Handling
-        |--------------------------------------------------------------------------
-        */
-
-        console.error(
-            "List Bookings Error:",
-            error
-        );
-
-        throw error;
-
-    }
+export const listBookings = async ({ bookingDate, status, customer, bookingSource, paymentStatus, page = 1, limit = 20 } = {}) => {
+  const query = { isDeleted: false };
+  if (bookingDate) {
+    const date = new Date(bookingDate);
+    if (Number.isNaN(date.getTime())) return { success: false, bookings: [], total: 0, page: 1, limit, totalPages: 0, message: "Invalid booking date." };
+    const start = new Date(date); start.setHours(0,0,0,0);
+    const end = new Date(date); end.setHours(23,59,59,999);
+    query.bookingDate = { $gte: start, $lte: end };
+  }
+  if (status) query.status = status;
+  if (customer) query.customer = customer;
+  if (bookingSource) query.bookingSource = bookingSource;
+  if (paymentStatus) query.paymentStatus = paymentStatus;
+  const currentPage = Math.max(1, Number(page) || 1);
+  const currentLimit = Math.min(100, Math.max(1, Number(limit) || 20));
+  const skip = (currentPage - 1) * currentLimit;
+  const [total, bookings] = await Promise.all([
+    Booking.countDocuments(query),
+    Booking.find(query)
+      .populate("customer")
+      .populate("table")
+      .populate("cancelledByUser", "name email role")
+      .sort({ createdAt: -1, bookingDate: -1, startTime: -1 })
+      .skip(skip)
+      .limit(currentLimit)
+      .lean(),
+  ]);
+  return { success: true, bookings, total, page: currentPage, limit: currentLimit, totalPages: Math.ceil(total / currentLimit), message: "Bookings retrieved successfully." };
 };

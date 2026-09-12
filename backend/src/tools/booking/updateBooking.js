@@ -30,7 +30,7 @@ export const updateBooking = async ({
     occasion,
     notes,
     status,
-}) => {
+}, context = {}) => {
 
     try {
 
@@ -46,7 +46,12 @@ export const updateBooking = async ({
 
             confirmationCode,
 
-            phone,
+            phone:
+                typeof phone === "string" && phone.trim()
+                    ? phone.trim()
+                    : (typeof context?.callerPhone === "string"
+                        ? context.callerPhone.trim()
+                        : undefined),
 
             bookingDate,
 

@@ -87,13 +87,24 @@ export const createBooking = async ({
         throw new Error(
             "Guest count must be a positive integer between 1 and 100.",
         );
+    const normalizedPhone = String(phone || "").trim();
+    const normalizedEmail = email === undefined || email === null
+        ? null
+        : String(email).trim().toLowerCase() || null;
+
+    if (!normalizedPhone) throw new Error("Customer phone is required.");
+
     const source = String(bookingSource || "dashboard")
         .trim()
         .toLowerCase();
     if (!ALLOWED_SOURCES.has(source))
         throw new Error("Invalid booking source.");
 
-    const customer = await findOrCreateCustomer({ name, phone, email });
+    const customer = await findOrCreateCustomer({
+        name: String(name).trim(),
+        phone: normalizedPhone,
+        email: normalizedEmail,
+    });
     let table;
     let endTime = "";
     if (tableId) {

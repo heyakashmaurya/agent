@@ -5,7 +5,7 @@ import Customer from "../../models/Customer.js";
 export const findOrCreateCustomer = async ({ name, phone, email }) => {
   if (!phone) throw new Error("Customer phone number is required.");
 
-  const normalizedPhone = String(phone).trim();
+  const normalizedPhone = String(phone).trim().replace(/[\s().-]/g, "");
   const normalizedName = String(name || "Guest").trim() || "Guest";
   const normalizedEmail = email ? String(email).trim().toLowerCase() : null;
 

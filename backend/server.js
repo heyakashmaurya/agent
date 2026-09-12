@@ -8,6 +8,7 @@ import { Server } from "socket.io";
 import app from "./src/app.js";
 import connectDB from "./src/config/db.js";
 import env from "./src/config/env.js";
+// import { resumePendingCampaigns } from "./src/services/outboundCampaign.service.js";
 
 /* ---------------------------------- */
 /* Create HTTP Server                 */
@@ -41,6 +42,7 @@ io.on("connection", (socket) => {
 const startServer = async () => {
   try {
     await connectDB();
+    // await resumePendingCampaigns();
 
     server.listen(env.port, () => {
       console.log(`Server running on port ${env.port}`);
@@ -61,6 +63,7 @@ startServer();
 // import app from "./src/app.js";
 // import connectDB from "./src/config/db.js";
 // import env from "./src/config/env.js";
+import { resumePendingCampaigns } from "./src/services/outboundCampaign.service.js";
 
 // /* ---------------------------------- */
 // /* Create HTTP Server                 */

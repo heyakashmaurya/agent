@@ -1,258 +1,40 @@
-
-
 import Booking from "../../models/Booking.js";
 import Table from "../../models/Table.js";
-
-import { validateBookingDate } from "../../utils/dateValidator.js";
-import { validateBookingTime } from "../../utils/timeValidator.js";
 import { calculateEndTime } from "../../utils/calculateEndTime.js";
 import { isTimeOverlapping } from "../../utils/timeOverlap.js";
 
-/*
-|--------------------------------------------------------------------------
-| Check Table Availability
-|--------------------------------------------------------------------------
-*/
-
-export const checkAvailability = async ({
-    bookingDate,
-    startTime,
-    guestCount,
-    excludeBookingId = null,
-}) => {
-
-    try {
-
-        /*
-        |--------------------------------------------------------------------------
-        | Validate Booking Date
-        |--------------------------------------------------------------------------
-        */
-
-        const dateValidation = validateBookingDate(bookingDate);
-
-        if (!dateValidation.valid) {
-
-            return {
-                available: false,
-                table: null,
-                endTime: null,
-                reason: dateValidation.reason,
-            };
-
-        }
-
-        /*
-        |--------------------------------------------------------------------------
-        | Validate Booking Time
-        |--------------------------------------------------------------------------
-        */
-
-        const timeValidation = validateBookingTime(startTime);
-
-        if (!timeValidation.valid) {
-
-            return {
-                available: false,
-                table: null,
-                endTime: null,
-                reason: timeValidation.reason,
-            };
-
-        }
-
-        /*
-        |--------------------------------------------------------------------------
-        | Calculate Booking End Time
-        |--------------------------------------------------------------------------
-        */
-
-        const endTime = calculateEndTime(startTime);
-
-        /*
-        |--------------------------------------------------------------------------
-        | Find Suitable Tables
-        |--------------------------------------------------------------------------
-        */
-
-        const suitableTables = await Table.find({
-
-            isDeleted: false,
-
-            isActive: true,
-
-            capacity: {
-                $gte: guestCount,
-            },
-
-        }).sort({
-
-            capacity: 1,
-
-        });
-
-        if (!suitableTables.length) {
-
-            return {
-
-                available: false,
-
-                table: null,
-
-                endTime,
-
-                reason: "No table can accommodate this many guests.",
-
-            };
-
-        }
-
-        /*
-        |--------------------------------------------------------------------------
-        | Existing Active Bookings
-        |--------------------------------------------------------------------------
-        */
-
-        const bookingQuery = {
-
-            bookingDate,
-
-            status: {
-                $in: [
-                    "pending",
-                    "confirmed",
-                    "seated",
-                ],
-            },
-
-            isDeleted: false,
-
-        };
-
-        /*
-        |--------------------------------------------------------------------------
-        | Ignore Current Booking (For Updates)
-        |--------------------------------------------------------------------------
-        */
-
-        if (excludeBookingId) {
-
-            bookingQuery._id = {
-
-                $ne: excludeBookingId,
-
-            };
-
-        }
-
-        const existingBookings = await Booking.find(bookingQuery);
-
-        /*
-        |--------------------------------------------------------------------------
-        | Find First Available Table
-        |--------------------------------------------------------------------------
-        */
-
-        for (const table of suitableTables) {
-
-            const tableBookings = existingBookings.filter(
-
-                booking =>
-
-                    booking.table &&
-
-                    booking.table.toString() === table._id.toString()
-
-            );
-
-            let isOccupied = false;
-
-            for (const booking of tableBookings) {
-
-                if (
-
-                    isTimeOverlapping({
-
-                        existingStart: booking.startTime,
-
-                        existingEnd: booking.endTime,
-
-                        requestedStart: startTime,
-
-                        requestedEnd: endTime,
-
-                    })
-
-                ) {
-
-                    isOccupied = true;
-
-                    break;
-
-                }
-
-            }
-
-            if (!isOccupied) {
-
-                return {
-
-                    available: true,
-
-                    table,
-
-                    endTime,
-
-                    reason: null,
-
-                };
-
-            }
-
-        }
-
-        /*
-        |--------------------------------------------------------------------------
-        | No Table Available
-        |--------------------------------------------------------------------------
-        */
-
-        return {
-
-            available: false,
-
-            table: null,
-
-            endTime,
-
-            reason: "No tables available at the selected time.",
-
-        };
-
-    }
-
-    catch (error) {
-
-        console.error(
-
-            "Check Availability Error:",
-
-            error
-
-        );
-
-        return {
-
-            available: false,
-
-            table: null,
-
-            endTime: null,
-
-            reason: "Something went wrong while checking availability.",
-
-        };
-
-    }
-
+const activeStatuses = ["pending", "confirmed", "seated"];
+
+export const checkAvailability = async ({ bookingDate, startTime, guestCount, excludeBookingId, tableId } = {}) => {
+  const date = new Date(bookingDate);
+  const guests = Number(guestCount);
+  if (Number.isNaN(date.getTime())) return { available: false, reason: "Invalid booking date." };
+  if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(String(startTime || ""))) return { available: false, reason: "Invalid booking time." };
+  if (!Number.isInteger(guests) || guests < 1) return { available: false, reason: "Guest count must be at least 1." };
+
+  const endTime = calculateEndTime(String(startTime), 90);
+  const dayStart = new Date(date); dayStart.setHours(0, 0, 0, 0);
+  const dayEnd = new Date(date); dayEnd.setHours(23, 59, 59, 999);
+  const bookingQuery = { bookingDate: { $gte: dayStart, $lte: dayEnd }, status: { $in: activeStatuses }, isDeleted: false };
+  if (excludeBookingId) bookingQuery._id = { $ne: excludeBookingId };
+
+  const [bookings, tables] = await Promise.all([
+    Booking.find(bookingQuery).select("table startTime endTime").lean(),
+    Table.find({
+      ...(tableId ? { _id: tableId } : {}),
+      isDeleted: false,
+      isActive: true,
+      capacity: { $gte: guests },
+      status: { $ne: "Maintenance" },
+    }).sort({ capacity: 1, tableNumber: 1 }).lean(),
+  ]);
+
+  const available = tables.find((table) => !bookings.some((booking) => {
+    if (!booking.table || String(booking.table) !== String(table._id)) return false;
+    const bookedEnd = booking.endTime || calculateEndTime(booking.startTime, 90);
+    return isTimeOverlapping({ existingStart: booking.startTime, existingEnd: bookedEnd, requestedStart: startTime, requestedEnd: endTime });
+  }));
+
+  if (!available) return { available: false, table: null, endTime, reason: tableId ? "Selected table is not available for that time." : "No suitable table is available for that time." };
+  return { available: true, table: available, endTime, reason: null };
 };

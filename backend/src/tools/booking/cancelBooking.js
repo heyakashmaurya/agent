@@ -20,7 +20,7 @@ export const cancelBooking = async ({
     confirmationCode,
     phone,
     reason = "Cancelled by customer",
-}) => {
+}, context = {}) => {
 
     try {
 
@@ -30,7 +30,14 @@ export const cancelBooking = async ({
         |--------------------------------------------------------------------------
         */
 
-        if (!bookingId && !confirmationCode && !phone) {
+        const effectivePhone =
+            typeof phone === "string" && phone.trim()
+                ? phone.trim()
+                : (typeof context?.callerPhone === "string"
+                    ? context.callerPhone.trim()
+                    : "");
+
+        if (!bookingId && !confirmationCode && !effectivePhone) {
 
             return {
                 success: false,
@@ -53,7 +60,7 @@ export const cancelBooking = async ({
 
             confirmationCode,
 
-            phone,
+            phone: effectivePhone || undefined,
 
             reason,
 

@@ -28,7 +28,7 @@ export const createBooking = async ({
     specialRequest = "",
     occasion = "",
     notes = "",
-}) => {
+}, context = {}) => {
     try {
         /*
         |--------------------------------------------------------------------------
@@ -50,11 +50,20 @@ export const createBooking = async ({
         |--------------------------------------------------------------------------
         */
 
-        if (!phone || typeof phone !== "string" || !phone.trim()) {
+        const callerPhone =
+            typeof context?.callerPhone === "string"
+                ? context.callerPhone.trim()
+                : "";
+
+        const effectivePhone = callerPhone ||
+            (typeof phone === "string" ? phone.trim() : "");
+
+        if (!effectivePhone) {
             return {
                 success: false,
                 booking: null,
-                message: "Customer phone number is required.",
+                message:
+                    "I cannot access the caller's phone number for this call, so I cannot create the reservation yet.",
             };
         }
 
@@ -126,7 +135,7 @@ export const createBooking = async ({
 
         const result = await createBookingService({
             name: name.trim(),
-            phone: phone.trim(),
+            phone: effectivePhone,
             email:
                 typeof email === "string"
                     ? email.trim()
@@ -150,6 +159,8 @@ export const createBooking = async ({
                 typeof notes === "string"
                     ? notes.trim()
                     : "",
+
+            bookingSource: "ai_voice",
         });
 
         /*

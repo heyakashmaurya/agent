@@ -1,85 +1,72 @@
 import twilio from "twilio";
 import env from "../config/env.js";
+import AISetting from "../models/AISetting.js";
 import { parseString, sendError, sendSuccess, logControllerError } from "./_controllerUtils.js";
-import { createCallLog } from "../services/call/call.service.js";
+import { createCallLog, getCallBySid, updateCallLog } from "../services/call/call.service.js";
+import { getTelephonyProvider, providerConfigStatus } from "../services/providers/telephony.js";
+import { syncCampaignItem } from "../services/outboundCampaign.service.js";
 
-const getClient = () => {
-  const sid = parseString(env.twilioAccountSid || process.env.TWILIO_ACCOUNT_SID);
-  const token = parseString(env.twilioAuthToken || process.env.TWILIO_AUTH_TOKEN);
-  if (!sid || !token) throw Object.assign(new Error("Twilio credentials are not configured."), { statusCode: 503 });
-  return twilio(sid, token);
+const mapStatus = (raw) => ({ queued: "Ringing", initiated: "Ringing", ringing: "Ringing", in_progress: "Answered", answered: "Answered", completed: "Completed", busy: "Busy", failed: "Failed", no_answer: "Missed", canceled: "Cancelled", cancelled: "Cancelled" }[String(raw || "").toLowerCase()] || null);
+const e164 = (value) => String(value || "").trim().replace(/[^+\d]/g, "");
+
+const getActiveTelephony = async () => {
+  const setting = await AISetting.findOne({ isDeleted: false }).sort({ updatedAt: -1 }).lean();
+  return String(setting?.telephonyProvider || process.env.TELEPHONY_PROVIDER || "twilio").toLowerCase();
 };
 
-const normalizedPhone = (value) => parseString(value).replace(/[^+\d]/g, "");
+export const getOutboundConfig = async (req, res, next) => {
+  try {
+    const activeProvider = await getActiveTelephony();
+    return sendSuccess(res, { data: { activeProvider, providers: providerConfigStatus() }, message: "Outbound provider configuration retrieved." });
+  } catch (error) { return next(error); }
+};
 
 export const makeOutboundCall = async (req, res, next) => {
   try {
-    const to = normalizedPhone(req.body?.to || req.body?.phoneNumber);
-    const from = normalizedPhone(req.body?.from || env.twilioPhoneNumber || process.env.TWILIO_PHONE_NUMBER);
-    const baseUrl = parseString(env.baseUrl || process.env.PUBLIC_BASE_URL).replace(/\/$/, "");
+    const to = e164(req.body?.to || req.body?.phoneNumber);
+    if (!/^\+\d{8,15}$/.test(to)) return sendError(res, { status: 400, message: "Destination phone number must be in E.164 format, for example +919876543210." });
+    const provider = String(req.body?.provider || await getActiveTelephony()).toLowerCase();
+    const message = parseString(req.body?.message);
+    const call = await (await getTelephonyProvider(provider))({ to, message });
+    const status = mapStatus(call.status) || "Ringing";
+    const log = await createCallLog({ provider, providerCallId: call.providerCallId || "", callSid: call.providerCallId || "", phoneNumber: to, direction: "Outgoing", callStatus: status, aiHandled: true, notes: message, metadata: { providerResponse: call.raw || null } });
+    return sendSuccess(res, { status: 201, data: { callSid: call.providerCallId || null, callLogId: log?._id || null, provider, providerStatus: call.status || "queued", status }, message: `${provider} outbound call initiated.` });
+  } catch (error) { logControllerError("OUTBOUND_CALL", error, req); return next(error); }
+};
 
-    if (!to) return sendError(res, { status: 400, message: "Destination phone number is required." });
-    if (!/^\+\d{8,15}$/.test(to)) return sendError(res, { status: 400, message: "Destination phone number must be in E.164 format." });
-    if (!from || !/^\+\d{8,15}$/.test(from)) return sendError(res, { status: 503, message: "A valid Twilio caller ID is not configured." });
-    if (!baseUrl) return sendError(res, { status: 503, message: "Public backend URL is not configured." });
-
-    const client = getClient();
-    const call = await client.calls.create({
-      to,
-      from,
-      url: `${baseUrl}/api/outbound/connect-livekit`,
-      method: "POST",
-      statusCallback: `${baseUrl}/api/outbound/status`,
-      statusCallbackMethod: "POST",
-      statusCallbackEvent: ["initiated", "ringing", "answered", "completed"],
-    });
-
-    const callLog = await createCallLog({
-      callSid: call.sid,
-      phoneNumber: to,
-      direction: "Outgoing",
-      callStatus: "Ringing",
-      aiHandled: true,
-      notes: `Outbound call initiated by ${req.user?.id || "dashboard"}.`,
-    });
-
-    return sendSuccess(res, { status: 201, message: "Outbound call initiated successfully.", data: { callSid: call.sid, callLogId: callLog?._id || null, status: call.status || "queued" } });
-  } catch (error) {
-    logControllerError("OUTBOUND_CALL", error, req);
-    return next(error);
+const updateProviderCall = async ({ id, rawStatus, recordingUrl }) => {
+  if (!id) return;
+  const call = await getCallBySid(id);
+  const status = mapStatus(rawStatus);
+  if (call && status) {
+    const terminal = ["Completed", "Missed", "Busy", "Failed", "Cancelled"].includes(status);
+    await updateCallLog(call._id, { callStatus: status, providerStatus: rawStatus || "", endedAt: terminal ? new Date() : undefined, recordingUrl: recordingUrl || undefined, metadata: { callbackReceivedAt: new Date().toISOString() } });
   }
+  if (status) await syncCampaignItem({ providerCallId: id, providerStatus: rawStatus, status, recordingUrl });
 };
 
 export const connectLivekit = (req, res, next) => {
   try {
-    const sipUri = parseString(env.livekitSipUri || process.env.LIVEKIT_SIP_URI);
+    const sipUri = parseString(env.livekitSipUri);
     if (!sipUri) return sendError(res, { status: 503, message: "LIVEKIT_SIP_URI is not configured." });
     const twiml = new twilio.twiml.VoiceResponse();
     const dial = twiml.dial({ answerOnBridge: true });
     dial.sip(sipUri);
     return res.type("text/xml").send(twiml.toString());
-  } catch (error) {
-    logControllerError("OUTBOUND_CONNECT_LIVEKIT", error, req);
-    return next(error);
-  }
+  } catch (error) { return next(error); }
 };
 
-export const outboundStatus = async (req, res, next) => {
-  try {
-    const callSid = parseString(req.body?.CallSid);
-    const status = parseString(req.body?.CallStatus).toLowerCase();
-    const mapping = { queued: "Ringing", initiated: "Ringing", ringing: "Ringing", in_progress: "Answered", answered: "Answered", completed: "Completed", busy: "Busy", failed: "Failed", no_answer: "Missed", canceled: "Cancelled", cancelled: "Cancelled" };
-    const callStatus = mapping[status];
-    if (callSid && callStatus) {
-      const { getCallBySid, updateCallLog } = await import("../services/call/call.service.js");
-      const callLog = await getCallBySid(callSid);
-      if (callLog) await updateCallLog(callLog._id, { callStatus });
-    }
-    return res.status(204).send();
-  } catch (error) {
-    logControllerError("OUTBOUND_STATUS", error, req);
-    return next(error);
-  }
+export const twilioStatus = async (req, res, next) => {
+  try { await updateProviderCall({ id: parseString(req.body?.CallSid), rawStatus: req.body?.CallStatus, recordingUrl: parseString(req.body?.RecordingUrl) }); return res.status(204).send(); }
+  catch (error) { logControllerError("TWILIO_STATUS", error, req); return next(error); }
+};
+export const exotelStatus = async (req, res, next) => {
+  try { const body = req.body || {}; await updateProviderCall({ id: parseString(body.CallSid || body.CallUUID || body.call_sid), rawStatus: body.CallStatus || body.Status || body.status, recordingUrl: parseString(body.RecordingUrl || body.recordingurl) }); return res.status(200).send("OK"); }
+  catch (error) { logControllerError("EXOTEL_STATUS", error, req); return next(error); }
+};
+export const vobizStatus = async (req, res, next) => {
+  try { const body = req.body || {}; await updateProviderCall({ id: parseString(body.call_uuid || body.request_uuid || body.sid || body.call_id), rawStatus: body.status || body.call_status, recordingUrl: parseString(body.recording_url) }); return res.status(200).json({ success: true }); }
+  catch (error) { logControllerError("VOBIZ_STATUS", error, req); return next(error); }
 };
 
-export default { makeOutboundCall, connectLivekit, outboundStatus };
+export default { getOutboundConfig, makeOutboundCall, connectLivekit, twilioStatus, exotelStatus, vobizStatus };

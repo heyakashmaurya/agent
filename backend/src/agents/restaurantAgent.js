@@ -11,13 +11,14 @@ import {
 } from "@livekit/agents";
 
 import connectDB from "../config/db.js";
-import { livekitRestaurantTools } from "../tools/livekitTools.js";
+import { createLivekitRestaurantTools } from "../tools/livekitTools.js";
 
 import { createDeepgramSTT } from "../services/voice/deepgramSTT.js";
 import { deepseekLLM } from "../services/voice/livekitDeepseek.js";
 import { elevenlabsTTS } from "../services/voice/livekitElevenLabsTTS.js";
 
 import getRestaurantAgentPrompt from "../prompts/restaurantAgentPrompt.js";
+import { extractCallerPhone, maskPhone } from "../services/voice/callerIdentity.js";
 
 dotenv.config();
 
@@ -43,28 +44,28 @@ export default defineAgent({
             ctx.room.name
         );
 
+        // LiveKit exposes the telephony caller/destination phone number on
+        // SIP participant attributes as sip.phoneNumber. This keeps phone
+        // collection outside the LLM and scoped to the active call.
+        const participant = await ctx.waitForParticipant();
+        const callerPhone = extractCallerPhone(participant);
+        const callerPhoneMasked = maskPhone(callerPhone);
+
+        console.log(
+            "☎️ Caller phone available:",
+            callerPhoneMasked
+        );
+
         const stt = createDeepgramSTT();
         const tts = elevenlabsTTS();
+        const tools = createLivekitRestaurantTools({ callerPhone });
 
         const agent = new voice.Agent({
-            instructions: getRestaurantAgentPrompt(),
-            tools: livekitRestaurantTools,
+            instructions: getRestaurantAgentPrompt({ callerPhone }),
+            tools,
         });
 
-        console.log("========== LLM DEBUG ==========");
-        console.log(
-            "DeepSeek key exists:",
-            !!process.env.DEEPSEEK_API_KEY
-        );
-        console.log(
-            "DeepSeek key prefix:",
-            process.env.DEEPSEEK_API_KEY?.slice(0, 8)
-        );
-        console.log(
-            "DeepSeek LLM exists:",
-            !!deepseekLLM
-        );
-        console.log("================================");
+        console.log("🤖 Restaurant voice agent initialized");
 
         const session = new voice.AgentSession({
             stt,
@@ -131,7 +132,7 @@ cli.runApp(
 // } from "@livekit/agents";
 
 // import connectDB from "../config/db.js";
-// import { livekitRestaurantTools } from "../tools/livekitTools.js";
+// import { createLivekitRestaurantTools } from "../tools/livekitTools.js";
 
 // import { createDeepgramSTT } from "../services/voice/deepgramSTT.js";
 // import { deepseekLLM } from "../services/voice/livekitDeepseek.js";
@@ -257,7 +258,7 @@ cli.runApp(
 
 // import { llm } from "@livekit/agents";
 
-// import { livekitRestaurantTools } from "../tools/livekitTools.js";
+// import { createLivekitRestaurantTools } from "../tools/livekitTools.js";
 // // import restaurantTools from "../tools/index.js";
 
 // import { fileURLToPath } from "node:url";

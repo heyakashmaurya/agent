@@ -1,32 +1,42 @@
 import dotenv from "dotenv";
-
 dotenv.config();
 
 const env = {
   nodeEnv: process.env.NODE_ENV || "development",
-  port: process.env.PORT || 5000,
-  baseUrl:process.env.BASE_URL,
+  port: Number(process.env.PORT || 5000),
+  baseUrl: (process.env.BASE_URL || process.env.PUBLIC_BASE_URL || "").replace(/\/$/, ""),
   mongoUri: process.env.MONGO_URI,
-
   jwtSecret: process.env.JWT_SECRET,
   jwtExpiresIn: process.env.JWT_EXPIRES_IN || "7d",
-
   clientUrl: process.env.CLIENT_URL || "http://localhost:5173",
-
-  geminiApiKey: process.env.GEMINI_API_KEY,
-
-  twilioAccountSid: process.env.TWILIO_ACCOUNT_SID,
-  twilioAuthToken: process.env.TWILIO_AUTH_TOKEN,
-  twilioPhoneNumber: process.env.TWILIO_PHONE_NUMBER,
-  twilioWebhookUrl: process.env.TWILIO_WEBHOOK_URL,
-
-  emailHost: process.env.EMAIL_HOST,
-  emailPort: process.env.EMAIL_PORT,
-  emailUser: process.env.EMAIL_USER,
-  emailPass: process.env.EMAIL_PASS,
-
-  timezone: process.env.TIMEZONE || "Asia/Kolkata",
-  restaurantName: process.env.RESTAURANT_NAME || "Restaurant"
+  timezone: process.env.TIMEZONE || process.env.APP_TIMEZONE || "Asia/Kolkata",
+  restaurantName: process.env.RESTAURANT_NAME || "Restaurant",
+  openaiApiKey: process.env.OPENAI_API_KEY || "",
+  deepseekApiKey: process.env.DEEPSEEK_API_KEY || "",
+  geminiApiKey: process.env.GEMINI_API_KEY || "",
+  openaiBaseUrl: process.env.OPENAI_BASE_URL || "https://api.openai.com/v1",
+  deepseekBaseUrl: process.env.DEEPSEEK_BASE_URL || "https://api.deepseek.com",
+  geminiBaseUrl: process.env.GEMINI_BASE_URL || "https://generativelanguage.googleapis.com/v1beta/openai/",
+  twilioAccountSid: process.env.TWILIO_ACCOUNT_SID || "",
+  twilioAuthToken: process.env.TWILIO_AUTH_TOKEN || "",
+  twilioPhoneNumber: process.env.TWILIO_PHONE_NUMBER || "",
+  exotelAccountSid: process.env.EXOTEL_ACCOUNT_SID || "",
+  exotelApiKey: process.env.EXOTEL_API_KEY || "",
+  exotelApiToken: process.env.EXOTEL_API_TOKEN || "",
+  exotelCallerId: process.env.EXOTEL_CALLER_ID || "",
+  exotelBaseUrl: process.env.EXOTEL_BASE_URL || "https://api.in.exotel.com",
+  exotelStreamUrl: process.env.EXOTEL_STREAM_URL || "",
+  exotelAppUrl: process.env.EXOTEL_APP_URL || "",
+  vobizAuthId: process.env.VOBIZ_AUTH_ID || "",
+  vobizAuthToken: process.env.VOBIZ_AUTH_TOKEN || "",
+  vobizFrom: process.env.VOBIZ_FROM || "",
+  vobizBaseUrl: process.env.VOBIZ_BASE_URL || "https://api.vobiz.ai",
+  vobizAnswerUrl: process.env.VOBIZ_ANSWER_URL || "",
+  vobizHangupUrl: process.env.VOBIZ_HANGUP_URL || "",
+  vobizCallUrl: process.env.VOBIZ_CALL_URL || "",
+  livekitSipUri: process.env.LIVEKIT_SIP_URI || "",
+  outboundConcurrency: Number(process.env.OUTBOUND_CONCURRENCY || 2),
+  outboundDelayMs: Number(process.env.OUTBOUND_DELAY_MS || 700),
 };
 
 export default env;
