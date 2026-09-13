@@ -1,9 +1,8 @@
 
 
-import {
-    TTS,
-    ChunkedStream
-} from "../../node_modules/@livekit/agents/dist/tts/tts.js";
+import { tts } from "@livekit/agents";
+
+const { TTS, ChunkedStream } = tts;
 
 import { AudioFrame } from "@livekit/rtc-node";
 import fetch from "node-fetch";
@@ -181,7 +180,7 @@ class SarvamChunkedStream extends ChunkedStream {
 // import {
 //     TTS,
 //     ChunkedStream
-// } from "../../node_modules/@livekit/agents/dist/tts/tts.js";
+// } from "@livekit/agents";
 
 // import { AudioFrame } from "@livekit/rtc-node";
 // import fetch from "node-fetch";
@@ -334,7 +333,7 @@ class SarvamChunkedStream extends ChunkedStream {
 // import {
 //     TTS,
 //     ChunkedStream
-// } from "../../node_modules/@livekit/agents/dist/tts/tts.js";
+// } from "@livekit/agents";
 
 // import { AudioFrame } from "@livekit/rtc-node";
 // import fetch from "node-fetch";

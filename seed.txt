@@ -1,0 +1,6 @@
+
+            email: "admin@me.com",
+
+            phone: "9999999999",
+
+            password: "Admin@123",

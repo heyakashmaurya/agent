@@ -1,8 +1,7 @@
 # Dependencies
 node_modules/
-updates/
-old
 final
+
 
 # Next.js
 .next/
